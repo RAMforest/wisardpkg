@@ -75,7 +75,48 @@ public:
     return _pyClassify<DataSet>(images);
   }
 
+  py::dict pyTrainEpochs(const std::vector<std::vector<int>>& images, const std::vector<std::string>& labels,
+                         const std::vector<std::vector<int>>& valImages, const std::vector<std::string>& valLabels,
+                         py::kwargs kwargs){
+    EpochReport report = trainEpochs(images, labels, valImages, valLabels, EpochConfig(kwargsToJSON(kwargs)));
+    py::list perEpoch;
+    for(unsigned int i=0; i<report.perEpoch.size(); i++){
+      perEpoch.append(py::cast(report.perEpoch[i]));
+    }
+    py::dict out;
+    out["bestEpoch"] = report.bestEpoch;
+    out["perEpoch"] = perEpoch;
+    return out;
+  }
+
+  void pyPenalize(const std::string& label, const std::vector<std::pair<int,addr_t>>& addrs, const double factor, py::kwargs kwargs){
+    CounterMode mode = COUNTER_FLOAT;
+    unsigned int seed = 0;
+    for(auto arg: kwargs){
+      if(std::string(py::str(arg.first)).compare("counterMode") == 0)
+        mode = EpochConfig::parseCounterMode(arg.second.cast<std::string>());
+      else if(std::string(py::str(arg.first)).compare("seed") == 0)
+        seed = arg.second.cast<unsigned int>();
+      else
+        throw Exception("Unknown option for penalize!");
+    }
+    penalize(label, addrs, factor, mode, seed);
+  }
+
 protected:
+  static nl::json kwargsToJSON(py::kwargs& kwargs){
+    nl::json c = nl::json::object();
+    for(auto arg: kwargs){
+      std::string key = py::str(arg.first);
+      if(py::isinstance<py::bool_>(arg.second)) c[key] = arg.second.cast<bool>();
+      else if(py::isinstance<py::int_>(arg.second)) c[key] = arg.second.cast<long long>();
+      else if(py::isinstance<py::float_>(arg.second)) c[key] = arg.second.cast<double>();
+      else if(py::isinstance<py::str>(arg.second)) c[key] = arg.second.cast<std::string>();
+      else throw Exception("The epoch training options must be bool, int, float or str!");
+    }
+    return c;
+  }
+
   py::list getClassesDegrees(std::map<std::string, int> candidates) const{
     float total = 0;
     int index = 0;

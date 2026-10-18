@@ -26,6 +26,7 @@ namespace nl = nlohmann;
 #include "binarization/kernelcanvas.cc"
 
 //wisard model
+#include "models/wisard/epochconfig.cc"
 #include "models/wisard/ramdatahandle.cc"
 #include "models/wisard/ram.cc"
 #include "models/wisard/discriminator.cc"

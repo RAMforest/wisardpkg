@@ -160,6 +160,86 @@ public:
     return size;
   }
 
+  // Epoch training, see RAM::beginTraining
+  void beginTraining(){
+    for(unsigned int i=0; i<rams.size(); i++){
+      rams[i].beginTraining();
+    }
+  }
+
+  void endTraining(const double divisor=1){
+    for(unsigned int i=0; i<rams.size(); i++){
+      rams[i].endTraining(divisor);
+    }
+    count = (int)std::lround(count/divisor);
+  }
+
+  template<typename T>
+  void trainF(const T& image){
+    checkEntrySize(image.size());
+    count++;
+    for(unsigned int i=0; i<rams.size(); i++){
+      rams[i].trainF(image);
+    }
+  }
+
+  // number of RAMs with counter >= b on the address of image
+  template<typename T>
+  int response(const T& image, const double b) const{
+    checkEntrySize(image.size());
+    int total = 0;
+    for(unsigned int i=0; i<rams.size(); i++){
+      if(rams[i].isActive(rams[i].getAddress(image), b)) total++;
+    }
+    return total;
+  }
+
+  template<typename T>
+  int responseDelivered(const T& image, const int b, const double divisor) const{
+    checkEntrySize(image.size());
+    int total = 0;
+    for(unsigned int i=0; i<rams.size(); i++){
+      if(rams[i].isActiveDelivered(rams[i].getAddress(image), b, divisor)) total++;
+    }
+    return total;
+  }
+
+  // the votes classify would read after dividing the counters by divisor
+  template<typename T>
+  std::vector<int> votesDelivered(const T& image, const double divisor) const{
+    checkEntrySize(image.size());
+    std::vector<int> votes(rams.size());
+    for(unsigned int i=0; i<rams.size(); i++){
+      votes[i] = rams[i].getVoteDelivered(rams[i].getAddress(image), divisor);
+    }
+    return votes;
+  }
+
+  // (ram, address) of image on each RAM that has the address stored;
+  // with onlyActive, only the ones with counter >= b
+  template<typename T>
+  std::vector<std::pair<int,addr_t>> addresses(const T& image, const bool onlyActive, const double b=0) const{
+    checkEntrySize(image.size());
+    std::vector<std::pair<int,addr_t>> out;
+    for(unsigned int i=0; i<rams.size(); i++){
+      addr_t addr = rams[i].getAddress(image);
+      if(onlyActive ? rams[i].isActive(addr, b) : rams[i].isPresent(addr)){
+        out.push_back(std::make_pair((int)i, addr));
+      }
+    }
+    return out;
+  }
+
+  counter_t getCounter(const int r, const addr_t addr) const{
+    checkRAMIndex(r);
+    return rams[r].getCounter(addr);
+  }
+
+  void penalize(const int r, const addr_t addr, const double factor, const CounterMode mode, EpochRNG& rng){
+    checkRAMIndex(r);
+    rams[r].penalize(addr, factor, mode, rng);
+  }
+
   ~Discriminator(){
     rams.clear();
   }
@@ -223,7 +303,7 @@ protected:
 
   void setRAMsData(nl::json mapping, nl::json rbase, std::string data){
     int s = ramdata_sufix.size();
-    if(data.substr(data.size()-s,s).compare(ramdata_sufix) == 0){
+    if(data.size() >= (size_t)s && data.substr(data.size()-s,s).compare(ramdata_sufix) == 0){
       std::ifstream dataFile;
       dataFile.open(data);
       if(dataFile.is_open()){
@@ -273,7 +353,7 @@ protected:
     }
     else{
       for(unsigned int i=0; i<rams.size(); i++){
-        if(data.size()>0) data += ".";
+        if(i != 0) data += ".";
         data += rams[i].getData();
       }
     }
@@ -324,6 +404,12 @@ private:
   void checkEntrySize(const int entry) const {
     if(entrySize != entry){
       throw Exception("The entry size defined on creation of discriminator is different of entry size given as input!");
+    }
+  }
+
+  void checkRAMIndex(const int r) const{
+    if(r < 0 || r >= (int)rams.size()){
+      throw Exception("The RAM index is out of range!");
     }
   }
 

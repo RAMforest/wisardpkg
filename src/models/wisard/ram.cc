@@ -101,6 +101,92 @@ public:
     return size;
   }
 
+  // Epoch training: while training the counters live as float in trainPositions;
+  // positions (int) is what classification and serialization read.
+  void beginTraining(){
+    if(trainingMode) return;
+    trainPositions.clear();
+    for(auto it=positions.begin(); it!=positions.end(); ++it){
+      trainPositions[it->first] = (counter_t)it->second;
+    }
+    ram_t().swap(positions);
+    trainingMode = true;
+  }
+
+  void endTraining(const double divisor=1){
+    if(!trainingMode) return;
+    positions.clear();
+    for(auto it=trainPositions.begin(); it!=trainPositions.end(); ++it){
+      content_t value = (content_t)std::lround(it->second/divisor);
+      if(value > 0) positions[it->first] = value;
+    }
+    ram_train_t().swap(trainPositions);
+    trainingMode = false;
+  }
+
+  bool isTraining() const{
+    return trainingMode;
+  }
+
+  template<typename T>
+  addr_t getAddress(const T& image) const{
+    return getIndex<T>(image);
+  }
+
+  bool isPresent(const addr_t addr) const{
+    if(ignoreZero && addr == 0) return false;
+    if(trainingMode) return trainPositions.find(addr) != trainPositions.end();
+    return positions.find(addr) != positions.end();
+  }
+
+  counter_t getCounter(const addr_t addr) const{
+    if(ignoreZero && addr == 0) return 0;
+    if(trainingMode){
+      auto it = trainPositions.find(addr);
+      return it == trainPositions.end() ? 0 : it->second;
+    }
+    auto it = positions.find(addr);
+    return it == positions.end() ? 0 : (counter_t)it->second;
+  }
+
+  bool isActive(const addr_t addr, const double b) const{
+    return isPresent(addr) && getCounter(addr) >= b;
+  }
+
+  // the vote of the model delivered after dividing the counters by divisor
+  bool isActiveDelivered(const addr_t addr, const int b, const double divisor) const{
+    return isPresent(addr) && std::lround(getCounter(addr)/divisor) >= b;
+  }
+
+  // the value getVote would return after dividing the counters by divisor
+  int getVoteDelivered(const addr_t addr, const double divisor) const{
+    return isPresent(addr) ? (int)std::lround(getCounter(addr)/divisor) : 0;
+  }
+
+  template<typename T>
+  void trainF(const T& image){
+    trainPositions[getIndex<T>(image)] += 1;
+  }
+
+  // m <- m*factor; never negative and the key is erased only when it reaches zero
+  void penalize(const addr_t addr, const double factor, const CounterMode mode, EpochRNG& rng){
+    if(trainingMode){
+      auto it = trainPositions.find(addr);
+      if(it == trainPositions.end()) return;
+      double value = applyFactor(it->second, factor, mode, rng);
+      if(value == 0) trainPositions.erase(it);
+      else it->second = (counter_t)value;
+    }
+    else{
+      auto it = positions.find(addr);
+      if(it == positions.end()) return;
+      double value = applyFactor(it->second, factor, mode, rng);
+      content_t rounded = (content_t)std::lround(value);
+      if(rounded <= 0) positions.erase(it);
+      else it->second = rounded;
+    }
+  }
+
   ~RAM(){
     addresses.clear();
     positions.clear();
@@ -152,6 +238,17 @@ private:
   ram_t positions;
   bool ignoreZero;
   int base;
+  ram_train_t trainPositions;
+  bool trainingMode = false;
+
+  static double applyFactor(const double m, const double factor, const CounterMode mode, EpochRNG& rng){
+    double value = m*factor;
+    if(mode == COUNTER_INT_STOCHASTIC){
+      double low = std::floor(value);
+      value = low + (rng.uniform01() < value-low ? 1 : 0);
+    }
+    return value;
+  }
 
   const std::vector<int> convertToBase(const int number) const{
     std::vector<int> numberConverted(addresses.size());

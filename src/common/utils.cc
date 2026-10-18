@@ -110,6 +110,7 @@ public:
 
   static std::string decode(const std::string& dataIn){
     long sizeIn = dataIn.size();
+    if(sizeIn < 4) return std::string(); // an empty RAM is encoded as ""
     long size = 3*(sizeIn/4) - (dataIn[sizeIn-2] == '=' ? 2 : (dataIn[sizeIn-1] == '=' ? 1 : 0));
     std::string dataOut(size, 0);
     long k=0;

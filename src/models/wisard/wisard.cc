@@ -143,8 +143,264 @@ public:
     return json(false,"");
   }
 
+  // R_d(x) for every discriminator at a fixed threshold b, without bleaching
+  std::map<std::string,int> responses(const std::vector<int>& image, const int b) const{
+    return _responses<std::vector<int>>(image, b);
+  }
+
+  std::map<std::string,int> responses(const BinInput& image, const int b) const{
+    return _responses<BinInput>(image, b);
+  }
+
+  // (ram, address) of image on the discriminator of label with counter >= b
+  std::vector<std::pair<int,addr_t>> activeAddresses(const std::vector<int>& image, const std::string& label, const int b) const{
+    return getDiscriminator(label).addresses(image, true, b);
+  }
+
+  void penalize(const std::string& label, const std::vector<std::pair<int,addr_t>>& addrs, const double factor, const CounterMode mode=COUNTER_FLOAT, const unsigned int seed=0){
+    if(factor < 0 || factor > 1){
+      throw Exception("The penalization factor must be in [0, 1]!");
+    }
+    Discriminator& d = getDiscriminator(label);
+    EpochRNG rng(seed);
+    for(unsigned int i=0; i<addrs.size(); i++){
+      d.penalize(addrs[i].first, addrs[i].second, factor, mode, rng);
+    }
+  }
+
+  // Epoch training (requisito-implementação.md, section 5): each example is classified at a
+  // fixed threshold before being written, the wrong winner (or the runner-up when the margin
+  // is low) is penalized multiplicatively and the right class is reinforced. The model ends
+  // at the best validation epoch, with counters divided by the number of epochs it has seen.
+  EpochReport trainEpochs(const std::vector<std::vector<int>>& images, const std::vector<std::string>& labels,
+                          const std::vector<std::vector<int>>& valImages, const std::vector<std::string>& valLabels,
+                          const EpochConfig& cfg){
+    cfg.validate();
+    checkInputSizes(images.size(), labels.size());
+    checkInputSizes(valImages.size(), valLabels.size());
+    if(images.size() == 0){
+      throw Exception("The training set can't be empty!");
+    }
+    checkConfidence(calculateNumberOfRams(images[0].size(), addressSize, completeAddressing));
+
+    const bool earlyStopping = valImages.size() > 0;
+    EpochRNG rng(cfg.seed);
+    EpochReport report;
+    std::map<std::string, Discriminator> best;
+    double bestScore = -1;
+    int since = 0;
+    int lastEpoch = 0;
+    std::vector<size_t> order(images.size());
+    std::iota(order.begin(), order.end(), 0);
+
+    beginTrainingAll();
+    try{
+      for(int t=0; t<cfg.epochs; t++){
+        lastEpoch = t;
+        const int bT = cfg.b*(t+1);
+        const double rhoT = cfg.rhoAt(t);
+        EpochCounters counters;
+
+        rng.shuffle(order);
+        for(size_t start=0; start<order.size(); start+=cfg.batchSize){
+          size_t end = std::min(order.size(), start+(size_t)cfg.batchSize);
+          for(size_t k=start; k<end; k++){
+            if(verbose) std::cout << "\repoch " << t+1 << ": training " << k+1 << " of " << order.size();
+            epochStep(images[order[k]], labels[order[k]], bT, rhoT, cfg, rng, counters);
+          }
+        }
+        if(verbose) std::cout << "\r" << std::endl;
+
+        double accVal = 0;
+        if(earlyStopping){
+          accVal = cfg.valMode == VAL_BLEACHING
+            ? evaluateDeliveredBleaching(valImages, valLabels, t+1)
+            : evaluateDelivered(valImages, valLabels, cfg.b, t+1);
+        }
+        std::map<std::string, double> row;
+        row["epoch"] = t;
+        row["rho"] = rhoT;
+        row["bT"] = bT;
+        row["accTrain"] = counters.hits/(double)images.size();
+        row["accVal"] = accVal;
+        row["nPenError"] = counters.penError;
+        row["nPenMargin"] = counters.penMargin;
+        report.perEpoch.push_back(row);
+
+        if(!earlyStopping) continue;
+        if(accVal > bestScore){
+          bestScore = accVal;
+          best = discriminators;
+          report.bestEpoch = t;
+          since = 0;
+        }
+        else if(++since >= cfg.patience){
+          break;
+        }
+      }
+
+      if(earlyStopping){
+        discriminators = best;
+      }
+      else{
+        report.bestEpoch = lastEpoch;
+      }
+      endTrainingAll(report.bestEpoch+1);
+    }
+    catch(...){
+      endTrainingAll(1);
+      throw;
+    }
+    return report;
+  }
+
 
 protected:
+  struct EpochCounters{
+    long hits = 0;
+    long penError = 0;
+    long penMargin = 0;
+  };
+
+  template<typename T>
+  std::map<std::string,int> _responses(const T& image, const int b) const{
+    std::map<std::string,int> out;
+    for(auto d=discriminators.begin(); d!=discriminators.end(); ++d){
+      out[d->first] = d->second.response(image, b);
+    }
+    return out;
+  }
+
+  Discriminator& getDiscriminator(const std::string& label){
+    auto d = discriminators.find(label);
+    if(d == discriminators.end()){
+      throw Exception("There is no discriminator for the given label!");
+    }
+    return d->second;
+  }
+
+  const Discriminator& getDiscriminator(const std::string& label) const{
+    auto d = discriminators.find(label);
+    if(d == discriminators.end()){
+      throw Exception("There is no discriminator for the given label!");
+    }
+    return d->second;
+  }
+
+  // winner and runner-up; on ties the smallest label wins (std::map order)
+  static bool top2(const std::map<std::string,int>& R, std::string& w, std::string& l){
+    int bw = -1, bl = -1;
+    bool hasL = false;
+    for(auto it=R.begin(); it!=R.end(); ++it){
+      if(it->second > bw){
+        if(bw >= 0){
+          l = w; bl = bw; hasL = true;
+        }
+        w = it->first; bw = it->second;
+      }
+      else if(it->second > bl){
+        l = it->first; bl = it->second; hasL = true;
+      }
+    }
+    return hasL;
+  }
+
+  template<typename T>
+  void epochStep(const T& image, const std::string& label, const int bT, const double rhoT, const EpochConfig& cfg, EpochRNG& rng, EpochCounters& counters){
+    std::map<std::string,int> R = _responses<T>(image, bT);
+    if(!R.empty()){
+      std::string w, l;
+      const bool hasL = top2(R, w, l);
+      const double Rw = R[w];
+      const double Rl = hasL ? R[l] : 0;
+      auto itY = R.find(label);
+      const double Ry = itY == R.end() ? 0 : itY->second;
+      const double C = Rw > 0 ? (Rw-Rl)/Rw : 0;
+
+      if(w != label){
+        double rhoEf = rhoT;
+        if(cfg.modulate) rhoEf *= Rw > 0 ? (Rw-Ry)/Rw : 0;
+        if(penalizeSelected(w, image, cfg.selectError, 1-rhoEf, bT, cfg, rng)) counters.penError++;
+      }
+      else{
+        counters.hits++;
+        if(hasL && cfg.tau > 0 && C < cfg.tau){
+          double rhoEf = rhoT*(cfg.tau-C)/cfg.tau;
+          if(penalizeSelected(l, image, cfg.selectMargin, 1-rhoEf, bT, cfg, rng)) counters.penMargin++;
+        }
+      }
+    }
+
+    if(discriminators.find(label) == discriminators.end()){
+      makeDiscriminator(label, image.size());
+      discriminators[label].beginTraining();
+    }
+    discriminators[label].trainF(image);
+  }
+
+  // RF-09: all active addresses, or the kappa with the lowest counter among the stored
+  // ones (lowest_count) or among the active ones (closest_to_b)
+  template<typename T>
+  bool penalizeSelected(const std::string& label, const T& image, const SelectMode mode, const double factor, const int bT, const EpochConfig& cfg, EpochRNG& rng){
+    Discriminator& d = discriminators[label];
+    std::vector<std::pair<int,addr_t>> addrs = d.addresses(image, mode != SELECT_LOWEST_COUNT, bT);
+    if(mode != SELECT_ALL){
+      const size_t kappa = cfg.kappa > 0 ? cfg.kappa : (d.getNumberOfRAMS()+3)/4;
+      std::stable_sort(addrs.begin(), addrs.end(),
+        [&d](const std::pair<int,addr_t>& lhs, const std::pair<int,addr_t>& rhs){
+          return d.getCounter(lhs.first, lhs.second) < d.getCounter(rhs.first, rhs.second);
+        });
+      if(addrs.size() > kappa) addrs.resize(kappa);
+    }
+    for(unsigned int i=0; i<addrs.size(); i++){
+      d.penalize(addrs[i].first, addrs[i].second, factor, cfg.counterMode, rng);
+    }
+    return !addrs.empty();
+  }
+
+  // accuracy of the model as it would be delivered after dividing the counters by divisor;
+  // it never writes in the RAMs
+  double evaluateDelivered(const std::vector<std::vector<int>>& images, const std::vector<std::string>& labels, const int b, const double divisor) const{
+    long hits = 0;
+    for(unsigned int i=0; i<images.size(); i++){
+      std::map<std::string,int> R;
+      for(auto d=discriminators.begin(); d!=discriminators.end(); ++d){
+        R[d->first] = d->second.responseDelivered(images[i], b, divisor);
+      }
+      if(R.empty()) continue;
+      std::string w, l;
+      top2(R, w, l);
+      if(w == labels[i]) hits++;
+    }
+    return hits/(double)images.size();
+  }
+
+  // the same as above, but deciding like classify: iterative bleaching and getBiggestCandidate
+  double evaluateDeliveredBleaching(const std::vector<std::vector<int>>& images, const std::vector<std::string>& labels, const double divisor) const{
+    long hits = 0;
+    for(unsigned int i=0; i<images.size(); i++){
+      std::map<std::string,std::vector<int>> allvotes;
+      for(auto d=discriminators.begin(); d!=discriminators.end(); ++d){
+        allvotes[d->first] = d->second.votesDelivered(images[i], divisor);
+      }
+      std::map<std::string,int> candidates = Bleaching::make(allvotes, bleachingActivated, searchBestConfidence, confidence);
+      if(Bleaching::getBiggestCandidate(candidates) == labels[i]) hits++;
+    }
+    return hits/(double)images.size();
+  }
+
+  void beginTrainingAll(){
+    for(auto d=discriminators.begin(); d!=discriminators.end(); ++d){
+      d->second.beginTraining();
+    }
+  }
+
+  void endTrainingAll(const double divisor){
+    for(auto d=discriminators.begin(); d!=discriminators.end(); ++d){
+      d->second.endTraining(divisor);
+    }
+  }
+
   template<typename T>
   void train(const T& image, const std::string& label){
     if(discriminators.find(label) == discriminators.end()){

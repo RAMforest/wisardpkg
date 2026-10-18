@@ -22,6 +22,7 @@ includes = [
     'binarization/base.cc',
     'binarization/kernelcanvas.cc',
 
+    'models/wisard/epochconfig.cc',
     'models/wisard/ramdatahandle.cc',
     'models/wisard/ram.cc',
     'models/wisard/discriminator.cc',

@@ -70,7 +70,7 @@ private:
 
   void setData(std::string inputdata){
     int s = ramdata_sufix.size();
-    if(inputdata.substr(inputdata.size()-s,s).compare(ramdata_sufix) == 0){
+    if(inputdata.size() >= (size_t)s && inputdata.substr(inputdata.size()-s,s).compare(ramdata_sufix) == 0){
       std::ifstream dataFile;
       dataFile.open(inputdata);
       if(dataFile.is_open()){
