@@ -78,15 +78,11 @@ public:
   py::dict pyTrainEpochs(const std::vector<std::vector<int>>& images, const std::vector<std::string>& labels,
                          const std::vector<std::vector<int>>& valImages, const std::vector<std::string>& valLabels,
                          py::kwargs kwargs){
-    EpochReport report = trainEpochs(images, labels, valImages, valLabels, EpochConfig(kwargsToJSON(kwargs)));
-    py::list perEpoch;
-    for(unsigned int i=0; i<report.perEpoch.size(); i++){
-      perEpoch.append(py::cast(report.perEpoch[i]));
-    }
-    py::dict out;
-    out["bestEpoch"] = report.bestEpoch;
-    out["perEpoch"] = perEpoch;
-    return out;
+    return reportToDict(trainEpochs(images, labels, valImages, valLabels, EpochConfig(kwargsToJSON(kwargs))));
+  }
+
+  py::dict pyTrainEpochs(const DataSet& train, const DataSet& val, py::kwargs kwargs){
+    return reportToDict(trainEpochs(train, val, EpochConfig(kwargsToJSON(kwargs))));
   }
 
   void pyPenalize(const std::string& label, const std::vector<std::pair<int,addr_t>>& addrs, const double factor, py::kwargs kwargs){
@@ -104,6 +100,17 @@ public:
   }
 
 protected:
+  static py::dict reportToDict(const EpochReport& report){
+    py::list perEpoch;
+    for(unsigned int i=0; i<report.perEpoch.size(); i++){
+      perEpoch.append(py::cast(report.perEpoch[i]));
+    }
+    py::dict out;
+    out["bestEpoch"] = report.bestEpoch;
+    out["perEpoch"] = perEpoch;
+    return out;
+  }
+
   static nl::json kwargsToJSON(py::kwargs& kwargs){
     nl::json c = nl::json::object();
     for(auto arg: kwargs){

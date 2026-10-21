@@ -249,6 +249,21 @@ class WisardEpochsTestCase(TestCase):
         self.assertEqual(report["bestEpoch"], 3)
         self.assertEqual(counters(wsd), counters(one))
 
+    def test_dataset_input_equals_lists(self):
+        X, y = self.overlapped()
+        def dataset(X, y):
+            d = wp.DataSet()
+            for x, label in zip(X, y):
+                d.add(x, label)
+            return d
+        options = dict(epochs=5, b=1, rho0=0.25, tau=0.2, valMode="bleaching", counterMode="int_stochastic", seed=9)
+        lists, sets = fixed(30, 3), fixed(30, 3)
+        r1 = lists.trainEpochs(X[:140], y[:140], X[140:], y[140:], **options)
+        r2 = sets.trainEpochs(dataset(X[:140], y[:140]), dataset(X[140:], y[140:]), **options)
+        self.assertEqual(r1, r2)
+        self.assertEqual(counters(lists), counters(sets))
+        self.assertEqual(sets.responses(wp.BinInput(X[0]), 1), lists.responses(X[0], 1))
+
     def test_invalid_options(self):
         wsd = fixed(9, 3)
         with self.assertRaises(RuntimeError):

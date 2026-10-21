@@ -175,22 +175,51 @@ public:
   EpochReport trainEpochs(const std::vector<std::vector<int>>& images, const std::vector<std::string>& labels,
                           const std::vector<std::vector<int>>& valImages, const std::vector<std::string>& valLabels,
                           const EpochConfig& cfg){
-    cfg.validate();
     checkInputSizes(images.size(), labels.size());
     checkInputSizes(valImages.size(), valLabels.size());
-    if(images.size() == 0){
+    return _trainEpochs(VectorSamples(images, labels), VectorSamples(valImages, valLabels), cfg);
+  }
+
+  // the DataSets must have a label in every example
+  EpochReport trainEpochs(const DataSet& train, const DataSet& val, const EpochConfig& cfg){
+    return _trainEpochs(DataSetSamples(train), DataSetSamples(val), cfg);
+  }
+
+
+protected:
+  struct VectorSamples{
+    const std::vector<std::vector<int>>& images;
+    const std::vector<std::string>& labels;
+    VectorSamples(const std::vector<std::vector<int>>& images, const std::vector<std::string>& labels): images(images), labels(labels){}
+    size_t size() const{ return images.size(); }
+    const std::vector<int>& image(size_t i) const{ return images[i]; }
+    const std::string& label(size_t i) const{ return labels[i]; }
+  };
+
+  struct DataSetSamples{
+    const DataSet& data;
+    DataSetSamples(const DataSet& data): data(data){}
+    size_t size() const{ return data.size(); }
+    const BinInput& image(size_t i) const{ return data[i]; }
+    std::string label(size_t i) const{ return data.getLabel(i); }
+  };
+
+  template<typename S>
+  EpochReport _trainEpochs(const S& train, const S& val, const EpochConfig& cfg){
+    cfg.validate();
+    if(train.size() == 0){
       throw Exception("The training set can't be empty!");
     }
-    checkConfidence(calculateNumberOfRams(images[0].size(), addressSize, completeAddressing));
+    checkConfidence(calculateNumberOfRams(train.image(0).size(), addressSize, completeAddressing));
 
-    const bool earlyStopping = valImages.size() > 0;
+    const bool earlyStopping = val.size() > 0;
     EpochRNG rng(cfg.seed);
     EpochReport report;
     std::map<std::string, Discriminator> best;
     double bestScore = -1;
     int since = 0;
     int lastEpoch = 0;
-    std::vector<size_t> order(images.size());
+    std::vector<size_t> order(train.size());
     std::iota(order.begin(), order.end(), 0);
 
     beginTrainingAll();
@@ -206,7 +235,7 @@ public:
           size_t end = std::min(order.size(), start+(size_t)cfg.batchSize);
           for(size_t k=start; k<end; k++){
             if(verbose) std::cout << "\repoch " << t+1 << ": training " << k+1 << " of " << order.size();
-            epochStep(images[order[k]], labels[order[k]], bT, rhoT, cfg, rng, counters);
+            epochStep(train.image(order[k]), train.label(order[k]), bT, rhoT, cfg, rng, counters);
           }
         }
         if(verbose) std::cout << "\r" << std::endl;
@@ -214,14 +243,14 @@ public:
         double accVal = 0;
         if(earlyStopping){
           accVal = cfg.valMode == VAL_BLEACHING
-            ? evaluateDeliveredBleaching(valImages, valLabels, t+1)
-            : evaluateDelivered(valImages, valLabels, cfg.b, t+1);
+            ? evaluateDeliveredBleaching(val, t+1)
+            : evaluateDelivered(val, cfg.b, t+1);
         }
         std::map<std::string, double> row;
         row["epoch"] = t;
         row["rho"] = rhoT;
         row["bT"] = bT;
-        row["accTrain"] = counters.hits/(double)images.size();
+        row["accTrain"] = counters.hits/(double)train.size();
         row["accVal"] = accVal;
         row["nPenError"] = counters.penError;
         row["nPenMargin"] = counters.penMargin;
@@ -254,8 +283,6 @@ public:
     return report;
   }
 
-
-protected:
   struct EpochCounters{
     long hits = 0;
     long penError = 0;
@@ -360,33 +387,35 @@ protected:
 
   // accuracy of the model as it would be delivered after dividing the counters by divisor;
   // it never writes in the RAMs
-  double evaluateDelivered(const std::vector<std::vector<int>>& images, const std::vector<std::string>& labels, const int b, const double divisor) const{
+  template<typename S>
+  double evaluateDelivered(const S& samples, const int b, const double divisor) const{
     long hits = 0;
-    for(unsigned int i=0; i<images.size(); i++){
+    for(size_t i=0; i<samples.size(); i++){
       std::map<std::string,int> R;
       for(auto d=discriminators.begin(); d!=discriminators.end(); ++d){
-        R[d->first] = d->second.responseDelivered(images[i], b, divisor);
+        R[d->first] = d->second.responseDelivered(samples.image(i), b, divisor);
       }
       if(R.empty()) continue;
       std::string w, l;
       top2(R, w, l);
-      if(w == labels[i]) hits++;
+      if(w == samples.label(i)) hits++;
     }
-    return hits/(double)images.size();
+    return hits/(double)samples.size();
   }
 
   // the same as above, but deciding like classify: iterative bleaching and getBiggestCandidate
-  double evaluateDeliveredBleaching(const std::vector<std::vector<int>>& images, const std::vector<std::string>& labels, const double divisor) const{
+  template<typename S>
+  double evaluateDeliveredBleaching(const S& samples, const double divisor) const{
     long hits = 0;
-    for(unsigned int i=0; i<images.size(); i++){
+    for(size_t i=0; i<samples.size(); i++){
       std::map<std::string,std::vector<int>> allvotes;
       for(auto d=discriminators.begin(); d!=discriminators.end(); ++d){
-        allvotes[d->first] = d->second.votesDelivered(images[i], divisor);
+        allvotes[d->first] = d->second.votesDelivered(samples.image(i), divisor);
       }
       std::map<std::string,int> candidates = Bleaching::make(allvotes, bleachingActivated, searchBestConfidence, confidence);
-      if(Bleaching::getBiggestCandidate(candidates) == labels[i]) hits++;
+      if(Bleaching::getBiggestCandidate(candidates) == samples.label(i)) hits++;
     }
-    return hits/(double)images.size();
+    return hits/(double)samples.size();
   }
 
   void beginTrainingAll(){

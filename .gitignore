@@ -13,3 +13,7 @@ __pycache__
 # data
 *.wdpkg
 *.wpkds
+
+# experiments (raw data is downloaded again by experiments/datasets.py)
+experiments/data/
+experiments

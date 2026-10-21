@@ -78,7 +78,10 @@ PYBIND11_MODULE(wisardpkg, m){
       .def("getMentalImages", &WisardWrapper::getMentalImages)
       .def("leaveOneOut", (void (WisardWrapper::*)(const std::vector<int>&, const std::string&)) &WisardWrapper::leaveOneOut)
       .def("leaveMoreOut", (void (WisardWrapper::*)(const std::vector<std::vector<int>>&, const std::vector<std::string>&)) &WisardWrapper::leaveMoreOut)
-      .def("trainEpochs", &WisardWrapper::pyTrainEpochs)
+      // BinInput has __getitem__, so its overloads come before the list ones
+      .def("trainEpochs", (py::dict (WisardWrapper::*)(const DataSet&, const DataSet&, py::kwargs)) &WisardWrapper::pyTrainEpochs)
+      .def("trainEpochs", (py::dict (WisardWrapper::*)(const std::vector<std::vector<int>>&, const std::vector<std::string>&, const std::vector<std::vector<int>>&, const std::vector<std::string>&, py::kwargs)) &WisardWrapper::pyTrainEpochs)
+      .def("responses", (std::map<std::string,int> (WisardWrapper::*)(const BinInput&, const int) const) &WisardWrapper::responses)
       .def("responses", (std::map<std::string,int> (WisardWrapper::*)(const std::vector<int>&, const int) const) &WisardWrapper::responses)
       .def("activeAddresses", &WisardWrapper::activeAddresses)
       .def("penalize", &WisardWrapper::pyPenalize)
