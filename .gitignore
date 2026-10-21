@@ -16,4 +16,5 @@ __pycache__
 
 # experiments (raw data is downloaded again by experiments/datasets.py)
 experiments/data/
-experiments
+experiments/results
+experiments/results_pilot_v1
