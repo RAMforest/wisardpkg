@@ -9,9 +9,13 @@ Compares, on several datasets, the one-shot WiSARD with the WiSARD trained by ep
 | `encoders.py` | thermometer and distributive thermometer, fitted on the training part only |
 | `run_grid.py` | trains and evaluates every configuration of the grid; one JSON line per configuration |
 | `summarize.py` | chooses each model's configuration on validation and writes the tables (test) |
+| `measure_memory.py` | RAM used while training (and classifying) configurations of the results, one new process per configuration |
+| `run_dwn.py` | DWN (`torch-dwn`, NVIDIA GPU only) on the same splits, seeds and binary inputs; accuracy, training and inference time per configuration in `results_dwn/` |
+| `dwn_benchmark.ipynb` | tables of the DWN against the WiSARD (epochs and one-shot) |
 
 Requirements (only for the experiments, not for the package): `numpy`, `scikit-learn`
-(OpenML loader), `pandas`, `scipy`, and `wisardpkg` installed (`pip install .`).
+(OpenML loader), `pandas`, `scipy`, `psutil` (`measure_memory.py`), and `wisardpkg` installed
+(`pip install .`).
 
 ## Protocol
 
@@ -41,6 +45,8 @@ Requirements (only for the experiments, not for the package): `numpy`, `scikit-l
 python experiments/run_grid.py --pilot --datasets iris blood   # timing of a few configurations + estimate
 python experiments/run_grid.py --datasets iris blood --jobs 10   # full grid; resumes if interrupted
 python experiments/summarize.py --out experiments/results/summary.md
+python experiments/measure_memory.py --dry-run                   # configurations to measure + time estimate
+python experiments/measure_memory.py --seeds 1 --jobs 2          # RAM of training and classification; resumes
 ```
 
 Images with many bits make large models (CIFAR-10 with 8 bits and address 16: about 1500 RAMs per

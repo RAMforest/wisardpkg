@@ -18,4 +18,5 @@ __pycache__
 experiments/data/
 experiments/figures
 experiments/results
+experiments/results_dwn
 experiments/results_pilot_v1
