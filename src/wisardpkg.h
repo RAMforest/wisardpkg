@@ -13,6 +13,7 @@ namespace nl = nlohmann;
 #include "common/exceptions.cc"
 #include "common/utils.cc"
 #include "common/bleaching.cc"
+#include "common/bleachingpolicy.cc"
 
 //data
 #include "data/bininput.cc"

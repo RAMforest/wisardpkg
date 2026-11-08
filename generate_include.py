@@ -13,6 +13,7 @@ includes = [
     'common/exceptions.cc',
     'common/utils.cc',
     'common/bleaching.cc',
+    'common/bleachingpolicy.cc',
 
     'data/bininput.cc',
     'data/dataset.cc',

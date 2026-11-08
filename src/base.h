@@ -12,3 +12,4 @@
 #include <cmath>
 #include <random>
 #include <numeric>
+#include <memory>

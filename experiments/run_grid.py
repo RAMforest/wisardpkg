@@ -6,17 +6,21 @@ Every configuration of the grid is trained and evaluated on validation and test,
 one JSON line in <resultsDir>/<dataset>/<encoding>/seed<k>.jsonl. Configurations already in the
 files are skipped, so an interrupted run resumes where it stopped.
 
-Grid (joint, repeated for every seed):
-  encoding bits x address size                       -> one-shot, classified with iterative
-                                                        bleaching
+Grid (joint, repeated for every seed and validation mode):
+  encoding bits x address size                       -> one-shot
   encoding bits x address size x b x rho0 x tau      -> trainEpochs with early stopping on
-                                                        validation, classified with bleaching
+                                                        validation
+Validation mode (VAL_MODES): the bleaching of the val/test classification of both models and of
+the validation of every epoch of trainEpochs: "bleaching" (iterative), "DAB" or "rDAB"
+(dab-dev.md, level A: the training does not change). Results written before the modes existed
+have no valMode and count as "bleaching".
 Splits: the official test set when the dataset has one (MNIST, FashionMNIST, CIFAR-10), with
 15% of the official training set as validation; otherwise a stratified 70/15/15 split. The split,
 the RAM mapping and the shuffling of the epochs change with the seed.
 
 Usage:
   python experiments/run_grid.py --datasets iris blood --jobs 10
+  python experiments/run_grid.py --datasets iris --valModes DAB rDAB   # only some modes
   python experiments/run_grid.py --pilot      # a few configurations per dataset + time estimate
 """
 import argparse
@@ -39,10 +43,15 @@ GRID = {
     "tabular": dict(bits=[2, 4, 8, 16, 32], address=[2, 4, 8, 16, 24, 32]),
     "image": dict(bits=[2, 4, 8, 16], address=[8, 16, 24, 32, 40]),
 }
-B_GRID = [1, 2]
+B_GRID = [1]
 RHO_GRID = [0.1, 0.3, 0.5, 0.7, 0.9]
 TAU_GRID = [0.0, 0.05, 0.1, 0.2]
-EPOCHS, PATIENCE, VAL_MODE = 20, 3, "bleaching"
+EPOCHS, PATIENCE = 20, 5
+# bleaching of the validation (early stopping of trainEpochs) and of the val/test classification;
+# the training itself does not change. "bleaching" is the iterative bleaching of the package.
+VAL_MODES = ["bleaching", "DAB", "rDAB"]
+POLICY = {"bleaching": "iterative", "DAB": "dab", "rDAB": "rdab"}  # Wisard(bleaching=...)
+DAB_OPTIONS = dict(confidenceTolerance=0.01, freqTolerance=0.1, dabRemoval="inclusive")
 
 
 # ---------------------------------------------------------------- splits and models
@@ -132,8 +141,19 @@ def prepared(name, encoding, seed, bits):
     return _prepared[key]
 
 
+def val_mode(t):
+    """results written before VAL_MODES have no valMode: they are "bleaching" """
+    return t.get("valMode", "bleaching")
+
+
 def task_key(t):
-    return "%(kind)s|bits=%(bits)d|address=%(address)d|b=%(b)s|rho0=%(rho0)s|tau=%(tau)s" % t
+    key = "%(kind)s|bits=%(bits)d|address=%(address)d|b=%(b)s|rho0=%(rho0)s|tau=%(tau)s" % t
+    return key if val_mode(t) == "bleaching" else key + "|valMode=" + val_mode(t)
+
+
+def make_model(task, p):
+    return wp.Wisard(task["address"], returnClassesDegrees=True, bleaching=POLICY[val_mode(task)],
+                     mapping=mapping(p["size"], task["address"], task["seed"], p["labels"]), **DAB_OPTIONS)
 
 
 def run_task(task):
@@ -141,15 +161,15 @@ def run_task(task):
     result = dict(task)
     try:
         p = prepared(task["dataset"], task["encoding"], task["seed"], task["bits"])
-        model = wp.Wisard(task["address"], returnClassesDegrees=True,
-                          mapping=mapping(p["size"], task["address"], task["seed"], p["labels"]))
+        model = make_model(task, p)
         if task["kind"] == "oneshot":
             model.train(p["train"])
             result["bleaching"] = dict(val=evaluate_bleaching(model, p["val"], p["yval"]),
                                        test=evaluate_bleaching(model, p["test"], p["ytest"]))
         else:
+            # valMode="bleaching": every epoch is validated with the bleaching policy of the model
             report = model.trainEpochs(p["train"], p["val"], b=task["b"], rho0=task["rho0"], tau=task["tau"],
-                                       epochs=EPOCHS, patience=PATIENCE, valMode=VAL_MODE, seed=task["seed"])
+                                       epochs=EPOCHS, patience=PATIENCE, valMode="bleaching", seed=task["seed"])
             result["bleaching"] = dict(val=evaluate_bleaching(model, p["val"], p["yval"]),
                                        test=evaluate_bleaching(model, p["test"], p["ytest"]))
             result["bestEpoch"] = report["bestEpoch"]
@@ -187,10 +207,11 @@ def build_tasks(args):
                     for address in address_grid:
                         if address > sizes[bits]:
                             continue
-                        base = dict(dataset=name, encoding=encoding, seed=seed, bits=bits, address=address)
-                        tasks.append(dict(base, kind="oneshot", b=None, rho0=None, tau=None))
-                        for b, rho0, tau in epoch_grid:
-                            tasks.append(dict(base, kind="epochs", b=b, rho0=rho0, tau=tau))
+                        for mode in args.valModes:
+                            base = dict(dataset=name, encoding=encoding, seed=seed, bits=bits, address=address, valMode=mode)
+                            tasks.append(dict(base, kind="oneshot", b=None, rho0=None, tau=None))
+                            for b, rho0, tau in epoch_grid:
+                                tasks.append(dict(base, kind="epochs", b=b, rho0=rho0, tau=tau))
     return tasks
 
 
@@ -212,11 +233,12 @@ def done_keys(results_dir, tasks):
 
 def estimate(results_dir, args):
     """time of the full grid from the pilot: mean seconds per epoch configuration of each
-    (dataset, encoding, bits, address), times the configurations and seeds of the full grid"""
-    full = (len(B_GRID) * len(RHO_GRID) * len(TAU_GRID)) * len(args.seeds)
+    (dataset, encoding, bits, address), times the configurations, validation modes and seeds of
+    the full grid"""
+    full = (len(B_GRID) * len(RHO_GRID) * len(TAU_GRID)) * len(args.valModes) * len(args.seeds)
     total = 0.0
-    print("\nestimate of the full grid (%d epoch configurations x %d seeds per bits/address), %d jobs:"
-          % (full // len(args.seeds), len(args.seeds), args.jobs))
+    print("\nestimate of the full grid (%d epoch configurations x %d validation modes x %d seeds per bits/address), %d jobs:"
+          % (full // len(args.seeds) // len(args.valModes), len(args.valModes), len(args.seeds), args.jobs))
     for name in args.datasets:
         for encoding in args.encodings:
             path = os.path.join(results_dir, name, encoding, "seed%d.jsonl" % args.seeds[0])
@@ -245,6 +267,8 @@ def main():
     parser.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2, 3, 4])
     parser.add_argument("--bits", type=int, nargs="+", help="overrides the bits grid")
     parser.add_argument("--address", type=int, nargs="+", help="overrides the address grid")
+    parser.add_argument("--valModes", nargs="+", default=VAL_MODES, choices=VAL_MODES,
+                        help="bleaching of the validation and of the classification (default: all)")
     parser.add_argument("--dataDir", default="experiments/data")
     parser.add_argument("--resultsDir", default="experiments/results")
     parser.add_argument("--jobs", type=int, default=max(1, multiprocessing.cpu_count() - 2))

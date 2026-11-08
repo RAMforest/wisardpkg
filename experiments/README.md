@@ -34,6 +34,10 @@ Requirements (only for the experiments, not for the package): `numpy`, `scikit-l
   - epoch training: b ∈ {1, 2} × rho0 ∈ {0.1, 0.15, 0.25, 0.35, 0.5, 0.6} ×
     tau ∈ {0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5}; at most 20 epochs, early stopping with patience 3
     on the validation accuracy with bleaching (`valMode="bleaching"`);
+  - validation mode (`VAL_MODES` in `run_grid.py`): the bleaching of the val/test classification of
+    both models and of the validation of every epoch: `bleaching` (iterative), `DAB` or `rDAB`
+    (`--valModes` runs only some); `summarize.py --valMode` and `summarize.load(dir, valMode)`
+    read one mode at a time (default `bleaching`, which also covers the older results);
   - one-shot classified with iterative bleaching (the baseline).
 - **Choice**: each model keeps, per seed, the configuration with the best validation accuracy;
   the test set is only reported. Confidence is C = (R_w − R_l)/R_w on the votes where the model

@@ -22,15 +22,18 @@ from scipy import stats
 MODELS = ("epochs + bleaching", "one-shot + bleaching")
 
 
-def load(results_dir):
-    """{(dataset, encoding): {seed: [results]}}"""
+def load(results_dir, valMode="bleaching"):
+    """{(dataset, encoding): {seed: [results]}} of one validation mode of run_grid.py ("bleaching",
+    "DAB" or "rDAB"; results without valMode are "bleaching"), so choose never mixes the modes"""
     out = collections.defaultdict(dict)
     for path in glob.glob(os.path.join(results_dir, "*", "*", "seed*.jsonl")):
         dataset, encoding = path.split(os.sep)[-3:-1]
         seed = int(os.path.basename(path)[4:-6])
         with open(path) as f:
             rows = [json.loads(line) for line in f]
-        out[(dataset, encoding)][seed] = [r for r in rows if "error" not in r]
+        rows = [r for r in rows if "error" not in r and r.get("valMode", "bleaching") == valMode]
+        if rows:
+            out[(dataset, encoding)][seed] = rows
     return out
 
 
@@ -125,8 +128,10 @@ def main():
     parser.add_argument("--resultsDir", default="experiments/results")
     parser.add_argument("--seeds", type=int, default=5, help="seeds expected per dataset (to flag incomplete ones)")
     parser.add_argument("--out", help="also write the tables to this markdown file")
+    parser.add_argument("--valMode", default="bleaching", choices=("bleaching", "DAB", "rDAB"),
+                        help="validation mode of run_grid.py whose results are summarized")
     args = parser.parse_args()
-    text = summarize(load(args.resultsDir), args.seeds)
+    text = summarize(load(args.resultsDir, args.valMode), args.seeds)
     print(text)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:

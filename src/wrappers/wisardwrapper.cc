@@ -40,29 +40,53 @@ public:
 
       if(std::string(py::str(arg.first)).compare("confidence") == 0)
         confidence = arg.second.cast<int>();
+
+      if(std::string(py::str(arg.first)).compare("returnBleachingInfo") == 0)
+        returnBleachingInfo = arg.second.cast<bool>();
+
+      if(std::string(py::str(arg.first)).compare("bleaching") == 0)
+        bleachingMode = arg.second.cast<std::string>();
+
+      if(std::string(py::str(arg.first)).compare("confidenceTolerance") == 0)
+        confidenceTolerance = arg.second.cast<double>();
+
+      if(std::string(py::str(arg.first)).compare("freqTolerance") == 0)
+        freqTolerance = arg.second.cast<double>();
+
+      if(std::string(py::str(arg.first)).compare("dabRemoval") == 0)
+        dabRemoval = arg.second.cast<std::string>();
     }
+    checkBleachingOptions();
   }
 
-  void setClassifyOutput(py::list& labels, int i, std::string aClass, float numberOfRAMS, std::map<std::string,int>& candidates){
-    if(returnConfidence || returnActivationDegree || returnClassesDegrees){
+  // the confidence is the one of the policy (for iterative, Bleaching::getConfidence as before)
+  void setClassifyOutput(py::list& labels, int i, float numberOfRAMS, BleachingResult& result){
+    const std::string& aClass = result.label;
+    const bool asDict = returnConfidence || returnActivationDegree || returnClassesDegrees || returnBleachingInfo;
+    if(asDict){
       labels[i] = py::dict(py::arg("class")=aClass);
     }
 
     if(returnActivationDegree){
-      float activationDegree = candidates[aClass]/numberOfRAMS;
+      float activationDegree = result.candidates[aClass]/numberOfRAMS;
       labels[i]["activationDegree"]=activationDegree;
     }
 
     if(returnConfidence){
-      float confidence = Bleaching::getConfidence(candidates, candidates[aClass]);
+      float confidence = (float)result.confidence;
       labels[i]["confidence"]=confidence;
     }
 
     if(returnClassesDegrees){
-      labels[i]["classesDegrees"] = getClassesDegrees(candidates);
+      labels[i]["classesDegrees"] = getClassesDegrees(result.candidates);
     }
 
-    if(!returnActivationDegree && !returnConfidence && !returnClassesDegrees){
+    if(returnBleachingInfo){
+      labels[i]["steps"] = result.steps;
+      labels[i]["finalThreshold"] = result.finalThreshold;
+    }
+
+    if(!asDict){
       labels[i] = aClass;
     }
   }
@@ -142,11 +166,12 @@ protected:
     float numberOfRAMS = calculateNumberOfRams(images[0].size(), addressSize, completeAddressing);
 
     py::list labels(images.size());
+    std::unique_ptr<BleachingPolicy> policy = makeBleachingPolicy();
+    const std::map<std::string,int> sizes = classSizes();
     for(unsigned int i=0; i<images.size(); i++){
       if(verbose) std::cout << "\rclassifying " << i+1 << " of " << images.size();
-      std::map<std::string,int> candidates = classify(images[i],searchBestConfidence);
-      std::string aClass = Bleaching::getBiggestCandidate(candidates);
-      setClassifyOutput(labels, i, aClass, numberOfRAMS, candidates);
+      BleachingResult result = decide(images[i], *policy, sizes);
+      setClassifyOutput(labels, i, numberOfRAMS, result);
     }
     if(verbose) std::cout << "\r" << std::endl;
     return labels;

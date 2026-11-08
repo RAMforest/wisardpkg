@@ -72,8 +72,7 @@ def measure_task(task):
     try:
         p = rg.prepared(task["dataset"], task["encoding"], task["seed"], task["bits"])
         rg._raw.clear()  # the raw features are no longer needed
-        model = wp.Wisard(task["address"], returnClassesDegrees=True,
-                          mapping=rg.mapping(p["size"], task["address"], task["seed"], p["labels"]))
+        model = rg.make_model(task, p)  # with the bleaching of the validation mode of the task
         gc.collect()
         before, peak_before = memory()
 
@@ -82,7 +81,7 @@ def measure_task(task):
             model.train(p["train"])
         else:
             model.trainEpochs(p["train"], p["val"], b=task["b"], rho0=task["rho0"], tau=task["tau"],
-                              epochs=rg.EPOCHS, patience=rg.PATIENCE, valMode=rg.VAL_MODE, seed=task["seed"])
+                              epochs=rg.EPOCHS, patience=rg.PATIENCE, valMode="bleaching", seed=task["seed"])
         result["secondsTrain"] = time.time() - start
         after_train, peak_train = memory()
 
@@ -131,7 +130,7 @@ def select(rows, mode):
 def build_tasks(args):
     import summarize  # only here: the workers do not need scipy
     tasks = []
-    for (dataset, encoding), seeds in sorted(summarize.load(args.resultsDir).items()):
+    for (dataset, encoding), seeds in sorted(summarize.load(args.resultsDir, args.valMode).items()):
         if (args.datasets and dataset not in args.datasets) or (args.encodings and encoding not in args.encodings):
             continue
         for seed, rows in sorted(seeds.items()):
@@ -141,7 +140,7 @@ def build_tasks(args):
                     and (not args.address or r["address"] in args.address)]
             for r in select(rows, args.select):
                 tasks.append(dict(dataset=dataset, encoding=encoding, seed=seed, kind=r["kind"], bits=r["bits"],
-                                  address=r["address"], b=r["b"], rho0=r["rho0"], tau=r["tau"],
+                                  address=r["address"], b=r["b"], rho0=r["rho0"], tau=r["tau"], valMode=args.valMode,
                                   gridSeconds=r["seconds"], noInfer=args.noInfer))
     return tasks
 
@@ -149,6 +148,8 @@ def build_tasks(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--select", choices=("best", "architecture"), default="best")
+    parser.add_argument("--valMode", default="bleaching", choices=rg.VAL_MODES,
+                        help="validation mode of run_grid.py whose configurations are measured")
     parser.add_argument("--datasets", nargs="+")
     parser.add_argument("--encodings", nargs="+")
     parser.add_argument("--seeds", type=int, nargs="+", help="default: every seed in the results")

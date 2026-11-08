@@ -16,11 +16,20 @@ public:
 
 
   static std::map<std::string, int> makeConfidenceless(std::map<std::string,std::vector<int>>& allvotes, const bool bleachingActivated, const int confidence) {
+    int steps, threshold;
+    return makeConfidenceless(allvotes, bleachingActivated, confidence, steps, threshold);
+  }
+
+  // also gives how many thresholds were tried and the last one, the one that made the labels
+  static std::map<std::string, int> makeConfidenceless(std::map<std::string,std::vector<int>>& allvotes, const bool bleachingActivated, const int confidence, int& steps, int& threshold) {
     std::map<std::string, int> labels;
     int bleaching = 1;
     std::tuple<bool,int> ambiguity;
+    steps = 0;
 
     do{
+      threshold = bleaching;
+      steps++;
       for(std::map<std::string,std::vector<int>>::iterator i=allvotes.begin(); i!=allvotes.end(); ++i){
         labels[i->first] = 0;
         for(unsigned int j=0; j<i->second.size(); j++){

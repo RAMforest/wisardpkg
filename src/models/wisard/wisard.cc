@@ -41,6 +41,23 @@ public:
 
     value = c["returnClassesDegrees"];
     returnClassesDegrees = value.is_null() ? false : value.get<bool>();
+
+    value = c["returnBleachingInfo"];
+    returnBleachingInfo = value.is_null() ? false : value.get<bool>();
+
+    value = c["bleaching"];
+    bleachingMode = value.is_null() ? "iterative" : value.get<std::string>();
+
+    value = c["confidenceTolerance"];
+    confidenceTolerance = value.is_null() ? 0.01 : value.get<double>();
+
+    value = c["freqTolerance"];
+    freqTolerance = value.is_null() ? 0.1 : value.get<double>();
+
+    value = c["dabRemoval"];
+    dabRemoval = value.is_null() ? "inclusive" : value.get<std::string>();
+
+    checkBleachingOptions();
   }
 
   Wisard(std::string config):Wisard(0,nl::json::parse(config)){
@@ -141,6 +158,15 @@ public:
   }
   std::string json() {
     return json(false,"");
+  }
+
+  // the counters classify reads in every RAM of every discriminator, before any bleaching
+  std::map<std::string,std::vector<int>> votes(const std::vector<int>& image){
+    return _votes<std::vector<int>>(image);
+  }
+
+  std::map<std::string,std::vector<int>> votes(const BinInput& image){
+    return _votes<BinInput>(image);
   }
 
   // R_d(x) for every discriminator at a fixed threshold b, without bleaching
@@ -403,17 +429,22 @@ protected:
     return hits/(double)samples.size();
   }
 
-  // the same as above, but deciding like classify: iterative bleaching and getBiggestCandidate
+  // the same as above, but deciding like classify, with the bleaching policy of the model
+  // (iterative, dab or rdab; the class sizes are the counts of the delivered model)
   template<typename S>
   double evaluateDeliveredBleaching(const S& samples, const double divisor) const{
+    std::unique_ptr<BleachingPolicy> policy = makeBleachingPolicy();
+    std::map<std::string,int> sizes;
+    for(auto d=discriminators.begin(); d!=discriminators.end(); ++d){
+      sizes[d->first] = (int)std::lround(d->second.getNumberOfTrainings()/divisor);
+    }
     long hits = 0;
     for(size_t i=0; i<samples.size(); i++){
       std::map<std::string,std::vector<int>> allvotes;
       for(auto d=discriminators.begin(); d!=discriminators.end(); ++d){
         allvotes[d->first] = d->second.votesDelivered(samples.image(i), divisor);
       }
-      std::map<std::string,int> candidates = Bleaching::make(allvotes, bleachingActivated, searchBestConfidence, confidence);
-      if(Bleaching::getBiggestCandidate(candidates) == samples.label(i)) hits++;
+      if(policy->resolve(allvotes, sizes).label == samples.label(i)) hits++;
     }
     return hits/(double)samples.size();
   }
@@ -440,34 +471,68 @@ protected:
 
   template<typename T>
   std::vector<std::string> _classify(const T& images){
-    //float numberOfRAMS = calculateNumberOfRams(images[0].size(), addressSize, completeAddressing);
     std::vector<std::string> labels(images.size());
+    std::unique_ptr<BleachingPolicy> policy = makeBleachingPolicy();
+    const std::map<std::string,int> sizes = classSizes();
 
     for(unsigned int i=0; i<images.size(); i++){
       if(verbose) std::cout << "\rclassifying " << i+1 << " of " << images.size();
-      std::map<std::string,int> candidates = classify(images[i],searchBestConfidence);
-      labels[i] = Bleaching::getBiggestCandidate(candidates);
+      labels[i] = decide(images[i], *policy, sizes).label;
     }
     if(verbose) std::cout << "\r" << std::endl;
     return labels;
   }
 
-  std::map<std::string, int> classify(const std::vector<int>& image, bool searchBestConfidence=false){
-    return __classify<std::vector<int>>(image,searchBestConfidence);
-  }
-
-  std::map<std::string, int> classify(const BinInput& image, bool searchBestConfidence=false){
-    return __classify<BinInput>(image,searchBestConfidence);
-  }
-
   template<typename T>
-  std::map<std::string, int> __classify(const T& image, bool searchBestConfidence=false){
+  std::map<std::string,std::vector<int>> _votes(const T& image){
     std::map<std::string,std::vector<int>> allvotes;
-
     for(std::map<std::string,Discriminator>::iterator i=discriminators.begin(); i!=discriminators.end(); ++i){
       allvotes[i->first] = i->second.classify(image);
     }
-    return Bleaching::make(allvotes, bleachingActivated, searchBestConfidence, confidence);
+    return allvotes;
+  }
+
+  template<typename T>
+  BleachingResult decide(const T& image, const BleachingPolicy& policy, const std::map<std::string,int>& sizes){
+    std::map<std::string,std::vector<int>> allvotes = _votes<T>(image);
+    return policy.resolve(allvotes, sizes);
+  }
+
+  // with bleachingActivated=false there is no bleaching, whatever the policy
+  std::unique_ptr<BleachingPolicy> makeBleachingPolicy() const{
+    const bool inclusive = dabRemoval == "inclusive";
+    if(bleachingActivated && bleachingMode == "dab"){
+      return std::unique_ptr<BleachingPolicy>(new DAB(confidenceTolerance, inclusive));
+    }
+    if(bleachingActivated && bleachingMode == "rdab"){
+      return std::unique_ptr<BleachingPolicy>(new RDAB(confidenceTolerance, freqTolerance, inclusive));
+    }
+    return std::unique_ptr<BleachingPolicy>(new IterativeBleaching(bleachingActivated, confidence));
+  }
+
+  // training examples of every class: the count of its discriminator, which also ends equal to
+  // the class size after trainEpochs (every example is reinforced once per epoch)
+  std::map<std::string,int> classSizes() const{
+    std::map<std::string,int> sizes;
+    for(auto d=discriminators.begin(); d!=discriminators.end(); ++d){
+      sizes[d->first] = d->second.getNumberOfTrainings();
+    }
+    return sizes;
+  }
+
+  void checkBleachingOptions() const{
+    if(bleachingMode != "iterative" && bleachingMode != "dab" && bleachingMode != "rdab"){
+      throw Exception("The bleaching must be iterative, dab or rdab!");
+    }
+    if(dabRemoval != "inclusive" && dabRemoval != "exclusive"){
+      throw Exception("The dabRemoval must be inclusive or exclusive!");
+    }
+    if(confidenceTolerance < 0 || confidenceTolerance > 1){
+      throw Exception("The confidenceTolerance must be in [0, 1]!");
+    }
+    if(freqTolerance < 0 || freqTolerance > 1){
+      throw Exception("The freqTolerance must be in [0, 1]!");
+    }
   }
 
   nl::json getClassesJSON(bool huge, std::string path){
@@ -500,7 +565,12 @@ protected:
       // {"searchBestConfidence", searchBestConfidence},
       {"returnConfidence", returnConfidence},
       {"returnActivationDegree", returnActivationDegree},
-      {"returnClassesDegrees", returnClassesDegrees}
+      {"returnClassesDegrees", returnClassesDegrees},
+      {"returnBleachingInfo", returnBleachingInfo},
+      {"bleaching", bleachingMode},
+      {"confidenceTolerance", confidenceTolerance},
+      {"freqTolerance", freqTolerance},
+      {"dabRemoval", dabRemoval}
     };
     return config;
   }
@@ -545,6 +615,11 @@ protected:
   bool returnConfidence;
   bool returnActivationDegree;
   bool returnClassesDegrees;
+  bool returnBleachingInfo;
   int confidence;
+  std::string bleachingMode;  // iterative, dab or rdab (bleachingpolicy.cc)
+  double confidenceTolerance;
+  double freqTolerance;
+  std::string dabRemoval;
   std::map<std::string, Discriminator> discriminators;
 };

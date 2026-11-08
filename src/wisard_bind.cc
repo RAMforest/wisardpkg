@@ -81,6 +81,8 @@ PYBIND11_MODULE(wisardpkg, m){
       // BinInput has __getitem__, so its overloads come before the list ones
       .def("trainEpochs", (py::dict (WisardWrapper::*)(const DataSet&, const DataSet&, py::kwargs)) &WisardWrapper::pyTrainEpochs)
       .def("trainEpochs", (py::dict (WisardWrapper::*)(const std::vector<std::vector<int>>&, const std::vector<std::string>&, const std::vector<std::vector<int>>&, const std::vector<std::string>&, py::kwargs)) &WisardWrapper::pyTrainEpochs)
+      .def("votes", (std::map<std::string,std::vector<int>> (WisardWrapper::*)(const BinInput&)) &WisardWrapper::votes)
+      .def("votes", (std::map<std::string,std::vector<int>> (WisardWrapper::*)(const std::vector<int>&)) &WisardWrapper::votes)
       .def("responses", (std::map<std::string,int> (WisardWrapper::*)(const BinInput&, const int) const) &WisardWrapper::responses)
       .def("responses", (std::map<std::string,int> (WisardWrapper::*)(const std::vector<int>&, const int) const) &WisardWrapper::responses)
       .def("activeAddresses", &WisardWrapper::activeAddresses)
