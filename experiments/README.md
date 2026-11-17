@@ -11,6 +11,7 @@ Compares, on several datasets, the one-shot WiSARD with the WiSARD trained by ep
 | `summarize.py` | chooses each model's configuration on validation and writes the tables (test) |
 | `measure_memory.py` | RAM used while training (and classifying) configurations of the results, one new process per configuration |
 | `run_dwn.py` | DWN (`torch-dwn`, NVIDIA GPU only) on the same splits, seeds and binary inputs; accuracy, training and inference time per configuration in `results_dwn/` |
+| `measure_time.py` | training and inference time on higgs of the one-shot and epoch WiSARD (iterative bleaching, DAB, rDAB) and the DWN, all with the same encoding, bits and tuple size, per seed, in `results_time/` |
 | `dwn_benchmark.ipynb` | tables of the DWN against the WiSARD (epochs and one-shot) |
 
 Requirements (only for the experiments, not for the package): `numpy`, `scikit-learn`
