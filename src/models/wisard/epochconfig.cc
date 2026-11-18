@@ -60,6 +60,9 @@ public:
   unsigned int seed = 0;
   // validation of each epoch: at the fixed threshold b, or with the iterative bleaching of classify
   ValMode valMode = VAL_FIXED;
+  // threads of the validation of each epoch and of the computation of the addresses (the
+  // training itself is sequential); 0 means every core. The result does not depend on it.
+  int threads = 1;
 
   EpochConfig(){}
   EpochConfig(nl::json c){
@@ -80,6 +83,7 @@ public:
       else if(key == "patience") patience = it.value().get<int>();
       else if(key == "seed") seed = it.value().get<unsigned int>();
       else if(key == "valMode") valMode = parseValMode(it.value().get<std::string>());
+      else if(key == "threads") threads = it.value().get<int>();
       else throw Exception("Unknown option for epoch training!");
     }
   }
@@ -94,6 +98,7 @@ public:
     if(batchSize < 1) throw Exception("batchSize can't be lesser than 1!");
     if(epochs < 1) throw Exception("epochs can't be lesser than 1!");
     if(patience < 1) throw Exception("patience can't be lesser than 1!");
+    if(threads < 0) throw Exception("threads can't be negative!");
   }
 
   double rhoAt(const int t) const{

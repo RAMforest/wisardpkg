@@ -16,6 +16,12 @@ def counters(wsd):
     return out
 
 
+def without_times(report):
+    """the report without the wall times of every epoch (secondsTrain, secondsVal)"""
+    return {"bestEpoch": report["bestEpoch"],
+            "perEpoch": [{k: v for k, v in row.items() if not k.startswith("seconds")} for row in report["perEpoch"]]}
+
+
 def fixed(entrySize, addressSize):
     """WiSARD with a deterministic mapping, shared by every class"""
     return wp.Wisard(addressSize, indexes=list(range(entrySize)))
@@ -223,7 +229,7 @@ class WisardEpochsTestCase(TestCase):
         for _ in range(2):
             wsd = fixed(30, 3)
             report = wsd.trainEpochs(X[:140], y[:140], X[140:], y[140:], epochs=6, counterMode="int_stochastic", seed=5)
-            runs.append((counters(wsd), report))
+            runs.append((counters(wsd), without_times(report)))
         self.assertEqual(runs[0], runs[1])
 
     # T-15: the training threshold compares float counters, without rounding
@@ -260,7 +266,7 @@ class WisardEpochsTestCase(TestCase):
         lists, sets = fixed(30, 3), fixed(30, 3)
         r1 = lists.trainEpochs(X[:140], y[:140], X[140:], y[140:], **options)
         r2 = sets.trainEpochs(dataset(X[:140], y[:140]), dataset(X[140:], y[140:]), **options)
-        self.assertEqual(r1, r2)
+        self.assertEqual(without_times(r1), without_times(r2))
         self.assertEqual(counters(lists), counters(sets))
         self.assertEqual(sets.responses(wp.BinInput(X[0]), 1), lists.responses(X[0], 1))
 

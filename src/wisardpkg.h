@@ -31,6 +31,7 @@ namespace nl = nlohmann;
 #include "models/wisard/ramdatahandle.cc"
 #include "models/wisard/ram.cc"
 #include "models/wisard/discriminator.cc"
+#include "models/wisard/addresstable.cc"
 #include "models/wisard/wisard.cc"
 
 //cluswisard wisard_model

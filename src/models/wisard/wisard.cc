@@ -230,6 +230,10 @@ protected:
     std::string label(size_t i) const{ return data.getLabel(i); }
   };
 
+  // Memory for the addresses computed before the first epoch (AddressTable), training and
+  // validation together; past it, the addresses of a discriminator are computed at each use.
+  static const size_t epochAddressBudget = (size_t)1 << 30;
+
   template<typename S>
   EpochReport _trainEpochs(const S& train, const S& val, const EpochConfig& cfg){
     cfg.validate();
@@ -239,6 +243,7 @@ protected:
     checkConfidence(calculateNumberOfRams(train.image(0).size(), addressSize, completeAddressing));
 
     const bool earlyStopping = val.size() > 0;
+    const int threads = epochThreads(cfg.threads);
     EpochRNG rng(cfg.seed);
     EpochReport report;
     std::map<std::string, Discriminator> best;
@@ -248,30 +253,43 @@ protected:
     std::vector<size_t> order(train.size());
     std::iota(order.begin(), order.end(), 0);
 
+    // the classes, in the order of discriminators, and the class of every training example
+    std::vector<int> trainClass(train.size());
+    std::vector<EpochClass> classes = epochClasses(train, trainClass);
+    EpochTables trainTables, valTables;
+    size_t budget = epochAddressBudget;
+
     beginTrainingAll();
     try{
+      // the addresses computed before the first epoch count in its training time
+      auto trainStart = std::chrono::steady_clock::now();
+      for(size_t c=0; c<classes.size(); c++){
+        if(classes[c].d != nullptr) attachClass(classes[c], *classes[c].d, train, trainTables, threads, budget);
+      }
       for(int t=0; t<cfg.epochs; t++){
         lastEpoch = t;
         const int bT = cfg.b*(t+1);
         const double rhoT = cfg.rhoAt(t);
         EpochCounters counters;
+        if(t > 0) trainStart = std::chrono::steady_clock::now();
 
         rng.shuffle(order);
         for(size_t start=0; start<order.size(); start+=cfg.batchSize){
           size_t end = std::min(order.size(), start+(size_t)cfg.batchSize);
           for(size_t k=start; k<end; k++){
             if(verbose) std::cout << "\repoch " << t+1 << ": training " << k+1 << " of " << order.size();
-            epochStep(train.image(order[k]), train.label(order[k]), bT, rhoT, cfg, rng, counters);
+            epochStep(train, order[k], classes, trainClass[order[k]], bT, rhoT, cfg, rng, counters,
+                      trainTables, threads, budget);
           }
         }
         if(verbose) std::cout << "\r" << std::endl;
+        const auto valStart = std::chrono::steady_clock::now();
 
         double accVal = 0;
         if(earlyStopping){
-          accVal = cfg.valMode == VAL_BLEACHING
-            ? evaluateDeliveredBleaching(val, t+1)
-            : evaluateDelivered(val, cfg.b, t+1);
+          accVal = evaluateEpoch(val, classes, valTables, cfg, t+1, threads, budget);
         }
+        const auto valEnd = std::chrono::steady_clock::now();
         std::map<std::string, double> row;
         row["epoch"] = t;
         row["rho"] = rhoT;
@@ -280,6 +298,9 @@ protected:
         row["accVal"] = accVal;
         row["nPenError"] = counters.penError;
         row["nPenMargin"] = counters.penMargin;
+        // wall time of the epoch: the pass over the training set and the validation
+        row["secondsTrain"] = std::chrono::duration<double>(valStart - trainStart).count();
+        row["secondsVal"] = std::chrono::duration<double>(valEnd - valStart).count();
         report.perEpoch.push_back(row);
 
         if(!earlyStopping) continue;
@@ -358,95 +379,215 @@ protected:
     return hasL;
   }
 
-  template<typename T>
-  void epochStep(const T& image, const std::string& label, const int bT, const double rhoT, const EpochConfig& cfg, EpochRNG& rng, EpochCounters& counters){
-    std::map<std::string,int> R = _responses<T>(image, bT);
-    if(!R.empty()){
-      std::string w, l;
-      const bool hasL = top2(R, w, l);
-      const double Rw = R[w];
-      const double Rl = hasL ? R[l] : 0;
-      auto itY = R.find(label);
-      const double Ry = itY == R.end() ? 0 : itY->second;
+  // One class of the epoch training. Classes are indexes in the order of discriminators
+  // (std::map), so ties still go to the smallest label.
+  struct EpochClass{
+    std::string label;
+    Discriminator* d = nullptr;                 // null until the first example of the class
+    std::shared_ptr<AddressTable> train, val;   // addresses of the examples; null: computed at each use
+    bool valReady = false;
+    std::vector<addr_t> addrs;                  // the addresses of the current example
+    std::vector<counter_t*> counters;           // and their counters (RAM::findCounter)
+    std::vector<int> selected;                  // RAMs chosen for a penalization
+    int response = 0;
+  };
+
+  // address tables already built, shared by the discriminators with the same mapping
+  typedef std::vector<std::pair<const Discriminator*, std::shared_ptr<AddressTable>>> EpochTables;
+
+  template<typename S>
+  std::vector<EpochClass> epochClasses(const S& train, std::vector<int>& trainClass){
+    std::map<std::string,int> index;
+    for(auto d=discriminators.begin(); d!=discriminators.end(); ++d) index[d->first] = 0;
+    std::vector<std::string> labels(train.size());
+    for(size_t i=0; i<train.size(); i++){
+      labels[i] = train.label(i);
+      index[labels[i]] = 0;
+    }
+    std::vector<EpochClass> classes(index.size());
+    int k = 0;
+    for(auto it=index.begin(); it!=index.end(); ++it){
+      it->second = k;
+      classes[k].label = it->first;
+      auto d = discriminators.find(it->first);
+      if(d != discriminators.end()) classes[k].d = &d->second;
+      k++;
+    }
+    for(size_t i=0; i<train.size(); i++) trainClass[i] = index[labels[i]];
+    return classes;
+  }
+
+  template<typename S>
+  std::shared_ptr<AddressTable> addressTable(const S& samples, const Discriminator& d, EpochTables& tables, const int threads, size_t& budget){
+    for(size_t k=0; k<tables.size(); k++){
+      if(tables[k].first->sameMapping(d)) return tables[k].second;
+    }
+    std::shared_ptr<AddressTable> table = AddressTable::build(samples, d, threads, budget);
+    tables.push_back(std::make_pair(&d, table));
+    return table;
+  }
+
+  template<typename S>
+  void attachClass(EpochClass& e, Discriminator& d, const S& train, EpochTables& tables, const int threads, size_t& budget){
+    e.d = &d;
+    const size_t rams = d.getNumberOfRAMS();
+    e.addrs.assign(rams, 0);
+    e.counters.assign(rams, nullptr);
+    e.selected.reserve(rams);
+    e.train = addressTable(train, d, tables, threads, budget);
+  }
+
+  template<typename S>
+  static void loadAddresses(const S& samples, const size_t i, const std::shared_ptr<AddressTable>& table, const Discriminator& d, addr_t* out){
+    if(table) table->row(i, out);
+    else d.fillAddresses(samples.image(i), out);
+  }
+
+  // One example of the epoch training: classified at the fixed threshold bT before being
+  // written, the wrong winner (or the runner-up when the margin is low) is penalized
+  // multiplicatively and the right class is reinforced. The address and the counter of every
+  // RAM are read once and kept for the penalization and the reinforcement: the penalized
+  // class is never the reinforced one, so the counters read stay valid.
+  template<typename S>
+  void epochStep(const S& train, const size_t i, std::vector<EpochClass>& classes, const int y, const int bT,
+                 const double rhoT, const EpochConfig& cfg, EpochRNG& rng, EpochCounters& counters,
+                 EpochTables& tables, const int threads, size_t& budget){
+    // R_k: RAMs with counter >= bT; winner and runner-up, ties to the smallest label
+    int w = -1, l = -1, bw = -1, bl = -1;
+    bool hasL = false;
+    for(size_t c=0; c<classes.size(); c++){
+      EpochClass& e = classes[c];
+      if(e.d == nullptr) continue;
+      loadAddresses(train, i, e.train, *e.d, e.addrs.data());
+      e.d->findCounters(e.addrs.data(), e.counters.data());
+      int r = 0;
+      for(size_t k=0; k<e.counters.size(); k++){
+        if(e.counters[k] != nullptr && *e.counters[k] >= bT) r++;
+      }
+      e.response = r;
+      if(r > bw){
+        if(bw >= 0){
+          l = w; bl = bw; hasL = true;
+        }
+        w = (int)c; bw = r;
+      }
+      else if(r > bl){
+        l = (int)c; bl = r; hasL = true;
+      }
+    }
+
+    if(w >= 0){
+      const double Rw = bw;
+      const double Rl = hasL ? bl : 0;
+      const double Ry = classes[y].d != nullptr ? classes[y].response : 0;
       const double C = Rw > 0 ? (Rw-Rl)/Rw : 0;
 
-      if(w != label){
+      if(w != y){
         double rhoEf = rhoT;
         if(cfg.modulate) rhoEf *= Rw > 0 ? (Rw-Ry)/Rw : 0;
-        if(penalizeSelected(w, image, cfg.selectError, 1-rhoEf, bT, cfg, rng)) counters.penError++;
+        if(penalizeSelected(classes[w], cfg.selectError, 1-rhoEf, bT, cfg, rng)) counters.penError++;
       }
       else{
         counters.hits++;
         if(hasL && cfg.tau > 0 && C < cfg.tau){
           double rhoEf = rhoT*(cfg.tau-C)/cfg.tau;
-          if(penalizeSelected(l, image, cfg.selectMargin, 1-rhoEf, bT, cfg, rng)) counters.penMargin++;
+          if(penalizeSelected(classes[l], cfg.selectMargin, 1-rhoEf, bT, cfg, rng)) counters.penMargin++;
         }
       }
     }
 
-    if(discriminators.find(label) == discriminators.end()){
-      makeDiscriminator(label, image.size());
-      discriminators[label].beginTraining();
+    EpochClass& e = classes[y];
+    if(e.d == nullptr){
+      makeDiscriminator(e.label, train.image(i).size());
+      Discriminator& d = discriminators[e.label];
+      d.beginTraining();
+      attachClass(e, d, train, tables, threads, budget);
+      loadAddresses(train, i, e.train, d, e.addrs.data());
+      d.findCounters(e.addrs.data(), e.counters.data());
     }
-    discriminators[label].trainF(image);
+    e.d->trainAt(e.addrs.data(), e.counters.data());
   }
 
   // RF-09: all active addresses, or the kappa with the lowest counter among the stored
-  // ones (lowest_count) or among the active ones (closest_to_b)
-  template<typename T>
-  bool penalizeSelected(const std::string& label, const T& image, const SelectMode mode, const double factor, const int bT, const EpochConfig& cfg, EpochRNG& rng){
-    Discriminator& d = discriminators[label];
-    std::vector<std::pair<int,addr_t>> addrs = d.addresses(image, mode != SELECT_LOWEST_COUNT, bT);
+  // ones (lowest_count) or among the active ones (closest_to_b); e holds the counters read
+  // by epochStep for the current example
+  bool penalizeSelected(EpochClass& e, const SelectMode mode, const double factor, const int bT, const EpochConfig& cfg, EpochRNG& rng){
+    std::vector<int>& selected = e.selected;
+    selected.clear();
+    for(size_t r=0; r<e.counters.size(); r++){
+      const counter_t* counter = e.counters[r];
+      if(counter != nullptr && (mode == SELECT_LOWEST_COUNT || *counter >= bT)) selected.push_back((int)r);
+    }
     if(mode != SELECT_ALL){
-      const size_t kappa = cfg.kappa > 0 ? cfg.kappa : (d.getNumberOfRAMS()+3)/4;
-      std::stable_sort(addrs.begin(), addrs.end(),
-        [&d](const std::pair<int,addr_t>& lhs, const std::pair<int,addr_t>& rhs){
-          return d.getCounter(lhs.first, lhs.second) < d.getCounter(rhs.first, rhs.second);
-        });
-      if(addrs.size() > kappa) addrs.resize(kappa);
+      const size_t kappa = cfg.kappa > 0 ? cfg.kappa : (e.d->getNumberOfRAMS()+3)/4;
+      std::stable_sort(selected.begin(), selected.end(), [&e](const int lhs, const int rhs){
+        return *e.counters[lhs] < *e.counters[rhs];
+      });
+      if(selected.size() > kappa) selected.resize(kappa);
     }
-    for(unsigned int i=0; i<addrs.size(); i++){
-      d.penalize(addrs[i].first, addrs[i].second, factor, cfg.counterMode, rng);
+    for(size_t k=0; k<selected.size(); k++){
+      const int r = selected[k];
+      e.d->penalizeAt(r, e.addrs[r], e.counters[r], factor, cfg.counterMode, rng);
     }
-    return !addrs.empty();
+    return !selected.empty();
   }
 
-  // accuracy of the model as it would be delivered after dividing the counters by divisor;
-  // it never writes in the RAMs
+  // Accuracy on samples of the model as it would be delivered after dividing the counters by
+  // divisor: at the fixed threshold b (VAL_FIXED) or deciding like classify, with the bleaching
+  // policy of the model (VAL_BLEACHING; the class sizes are the counts of the delivered model).
+  // It never writes in the RAMs, so the examples are split among the threads.
   template<typename S>
-  double evaluateDelivered(const S& samples, const int b, const double divisor) const{
-    long hits = 0;
-    for(size_t i=0; i<samples.size(); i++){
-      std::map<std::string,int> R;
-      for(auto d=discriminators.begin(); d!=discriminators.end(); ++d){
-        R[d->first] = d->second.responseDelivered(samples.image(i), b, divisor);
+  double evaluateEpoch(const S& samples, std::vector<EpochClass>& classes, EpochTables& tables,
+                       const EpochConfig& cfg, const double divisor, const int threads, size_t& budget){
+    std::vector<const EpochClass*> active;
+    size_t rams = 0;
+    for(size_t c=0; c<classes.size(); c++){
+      EpochClass& e = classes[c];
+      if(e.d == nullptr) continue;
+      if(!e.valReady){
+        e.val = addressTable(samples, *e.d, tables, threads, budget);
+        e.valReady = true;
       }
-      if(R.empty()) continue;
-      std::string w, l;
-      top2(R, w, l);
-      if(w == samples.label(i)) hits++;
+      active.push_back(&e);
+      rams = std::max(rams, e.addrs.size());
     }
-    return hits/(double)samples.size();
-  }
-
-  // the same as above, but deciding like classify, with the bleaching policy of the model
-  // (iterative, dab or rdab; the class sizes are the counts of the delivered model)
-  template<typename S>
-  double evaluateDeliveredBleaching(const S& samples, const double divisor) const{
-    std::unique_ptr<BleachingPolicy> policy = makeBleachingPolicy();
     std::map<std::string,int> sizes;
-    for(auto d=discriminators.begin(); d!=discriminators.end(); ++d){
-      sizes[d->first] = (int)std::lround(d->second.getNumberOfTrainings()/divisor);
+    for(size_t c=0; c<active.size(); c++){
+      sizes[active[c]->label] = (int)std::lround(active[c]->d->getNumberOfTrainings()/divisor);
     }
-    long hits = 0;
-    for(size_t i=0; i<samples.size(); i++){
-      std::map<std::string,std::vector<int>> allvotes;
-      for(auto d=discriminators.begin(); d!=discriminators.end(); ++d){
-        allvotes[d->first] = d->second.votesDelivered(samples.image(i), divisor);
+    const bool bleaching = cfg.valMode == VAL_BLEACHING;
+    std::vector<long> hits(std::max(threads, 1), 0);
+    parallelFor(samples.size(), threads, [&](size_t begin, size_t end, size_t part){
+      std::unique_ptr<BleachingPolicy> policy = makeBleachingPolicy();
+      std::vector<addr_t> addrs(rams);
+      long h = 0;
+      for(size_t i=begin; i<end; i++){
+        const std::string& label = samples.label(i);
+        if(bleaching){
+          std::map<std::string,std::vector<int>> allvotes;
+          for(size_t c=0; c<active.size(); c++){
+            loadAddresses(samples, i, active[c]->val, *active[c]->d, addrs.data());
+            active[c]->d->votesDeliveredAt(addrs.data(), divisor, allvotes[active[c]->label]);
+          }
+          if(policy->resolve(allvotes, sizes).label == label) h++;
+        }
+        else{
+          int w = -1, bw = -1;
+          for(size_t c=0; c<active.size(); c++){
+            loadAddresses(samples, i, active[c]->val, *active[c]->d, addrs.data());
+            const int r = active[c]->d->responseDeliveredAt(addrs.data(), cfg.b, divisor);
+            if(r > bw){
+              w = (int)c; bw = r;
+            }
+          }
+          if(w >= 0 && active[w]->label == label) h++;
+        }
       }
-      if(policy->resolve(allvotes, sizes).label == samples.label(i)) hits++;
-    }
-    return hits/(double)samples.size();
+      hits[part] += h;
+    });
+    long total = 0;
+    for(size_t p=0; p<hits.size(); p++) total += hits[p];
+    return total/(double)samples.size();
   }
 
   void beginTrainingAll(){

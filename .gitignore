@@ -24,3 +24,5 @@ experiments/results
 experiments/results_dwn
 experiments/results_time
 experiments/results_pilot_v1
+experiments/dwn_higgs_cpu
+experiments/results_time_best

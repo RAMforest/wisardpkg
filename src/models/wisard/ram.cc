@@ -149,23 +149,71 @@ public:
     return it == positions.end() ? 0 : (counter_t)it->second;
   }
 
+  // isPresent(addr) and, when true, value = getCounter(addr), with a single lookup
+  bool readCounter(const addr_t addr, counter_t& value) const{
+    if(ignoreZero && addr == 0) return false;
+    if(trainingMode){
+      auto it = trainPositions.find(addr);
+      if(it == trainPositions.end()) return false;
+      value = it->second;
+      return true;
+    }
+    auto it = positions.find(addr);
+    if(it == positions.end()) return false;
+    value = (counter_t)it->second;
+    return true;
+  }
+
   bool isActive(const addr_t addr, const double b) const{
-    return isPresent(addr) && getCounter(addr) >= b;
+    counter_t value;
+    return readCounter(addr, value) && value >= b;
   }
 
   // the vote of the model delivered after dividing the counters by divisor
   bool isActiveDelivered(const addr_t addr, const int b, const double divisor) const{
-    return isPresent(addr) && std::lround(getCounter(addr)/divisor) >= b;
+    counter_t value;
+    return readCounter(addr, value) && std::lround(value/divisor) >= b;
   }
 
   // the value getVote would return after dividing the counters by divisor
   int getVoteDelivered(const addr_t addr, const double divisor) const{
-    return isPresent(addr) ? (int)std::lround(getCounter(addr)/divisor) : 0;
+    counter_t value;
+    return readCounter(addr, value) ? (int)std::lround(value/divisor) : 0;
   }
 
   template<typename T>
   void trainF(const T& image){
     trainPositions[getIndex<T>(image)] += 1;
+  }
+
+  // Epoch training on addresses already computed (Wisard::epochStep), in training mode.
+  // The counter stored at addr, or nullptr where isPresent(addr) is false; the pointer stays
+  // valid until a new address is inserted in this RAM (erasing other addresses keeps it).
+  counter_t* findCounter(const addr_t addr){
+    if(ignoreZero && addr == 0) return nullptr;
+    auto it = trainPositions.find(addr);
+    return it == trainPositions.end() ? nullptr : &it->second;
+  }
+
+  // trainF on a known address; counter: findCounter(addr)
+  void trainAt(const addr_t addr, counter_t* counter){
+    if(counter != nullptr) *counter += 1;
+    else trainPositions[addr] += 1;
+  }
+
+  // penalize (training mode) on a known address; counter: findCounter(addr), not null
+  void penalizeAt(const addr_t addr, counter_t* counter, const double factor, const CounterMode mode, EpochRNG& rng){
+    double value = applyFactor(*counter, factor, mode, rng);
+    if(value == 0) trainPositions.erase(addr);
+    else *counter = (counter_t)value;
+  }
+
+  const std::vector<int>& getAddresses() const{
+    return addresses;
+  }
+
+  int getBase() const{
+    return base;
   }
 
   // m <- m*factor; never negative and the key is erased only when it reaches zero

@@ -240,6 +240,68 @@ public:
     rams[r].penalize(addr, factor, mode, rng);
   }
 
+  // ---- epoch training on addresses computed once (Wisard::_trainEpochs, AddressTable)
+
+  void checkEntry(const int size) const{
+    checkEntrySize(size);
+  }
+
+  const RAM& getRAM(const int r) const{
+    return rams[r];
+  }
+
+  // the same RAMs reading the same input bits: the addresses of an input are the same
+  bool sameMapping(const Discriminator& other) const{
+    if(rams.size() != other.rams.size()) return false;
+    for(unsigned int i=0; i<rams.size(); i++){
+      if(rams[i].getBase() != other.rams[i].getBase() || rams[i].getAddresses() != other.rams[i].getAddresses()) return false;
+    }
+    return true;
+  }
+
+  // out[i]: the address of image on RAM i
+  template<typename T>
+  void fillAddresses(const T& image, addr_t* out) const{
+    checkEntrySize(image.size());
+    for(unsigned int i=0; i<rams.size(); i++){
+      out[i] = rams[i].getAddress(image);
+    }
+  }
+
+  // out[i]: the counter of addrs[i] on RAM i (RAM::findCounter), in training mode
+  void findCounters(const addr_t* addrs, counter_t** out){
+    for(unsigned int i=0; i<rams.size(); i++){
+      out[i] = rams[i].findCounter(addrs[i]);
+    }
+  }
+
+  // trainF on addresses already computed; counters: findCounters(addrs)
+  void trainAt(const addr_t* addrs, counter_t* const* counters){
+    count++;
+    for(unsigned int i=0; i<rams.size(); i++){
+      rams[i].trainAt(addrs[i], counters[i]);
+    }
+  }
+
+  void penalizeAt(const int r, const addr_t addr, counter_t* counter, const double factor, const CounterMode mode, EpochRNG& rng){
+    rams[r].penalizeAt(addr, counter, factor, mode, rng);
+  }
+
+  int responseDeliveredAt(const addr_t* addrs, const int b, const double divisor) const{
+    int total = 0;
+    for(unsigned int i=0; i<rams.size(); i++){
+      if(rams[i].isActiveDelivered(addrs[i], b, divisor)) total++;
+    }
+    return total;
+  }
+
+  void votesDeliveredAt(const addr_t* addrs, const double divisor, std::vector<int>& votes) const{
+    votes.resize(rams.size());
+    for(unsigned int i=0; i<rams.size(); i++){
+      votes[i] = rams[i].getVoteDelivered(addrs[i], divisor);
+    }
+  }
+
   ~Discriminator(){
     rams.clear();
   }
