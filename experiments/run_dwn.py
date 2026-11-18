@@ -16,7 +16,16 @@ Every configuration is written as one JSON line in <resultsDir>/<dataset>/<encod
   secondsInferVal, secondsInferTest, secondsInfer (= val + test): classification of the final model
   accValPerEpoch validation accuracy after every epoch (not timed)
   seconds        wall time of the whole configuration (encoding, training, validations, inference)
+  device         where the model parameters were (next(model.parameters()).device) and, on CUDA,
+                 deviceName and peakGpuMB (peak memory allocated by torch on the GPU)
 Configurations already in the files are skipped, so an interrupted run resumes where it stopped.
+
+The device must be requested explicitly: with --device cuda (the default) the script stops if
+CUDA is not available, instead of falling back to the CPU. Only NVIDIA GPUs are CUDA devices, so
+the integrated GPU of a laptop is never used. --check-device prints the GPUs torch sees, trains
+one batch of a DWN on the device (by default the image model on 784 x 8 input bits, the largest
+one) and reports where the parameters and the output were, and the peak GPU memory; nothing is
+written.
 
 torch-dwn only runs on NVIDIA GPUs (its LUT layers have only a CUDA kernel), and is compiled at
 install time, against the installed torch:
@@ -26,6 +35,7 @@ It needs the CUDA toolkit (nvcc) with CUDA_HOME set and, on Windows, the MSVC Bu
 wisardpkg is not needed.
 
 Usage:
+  python experiments/run_dwn.py --check-device                  # is the DWN running on the GPU?
   python experiments/run_dwn.py --dry-run                       # what would run
   python experiments/run_dwn.py --datasets iris blood --seeds 1
   python experiments/run_dwn.py                                 # everything; resumes if interrupted
@@ -114,6 +124,48 @@ def timed_accuracy(model, data, device, batch_size):
     return acc, time.time() - start
 
 
+# ---------------------------------------------------------------- device
+
+MB = float(2 ** 20)
+
+
+def check_device(args, device):
+    """prints the GPUs torch sees and trains one batch of a DWN on the device"""
+    print("torch %s, built with CUDA %s, CUDA available: %s" % (torch.__version__, torch.version.cuda, torch.cuda.is_available()))
+    for k in range(torch.cuda.device_count()):
+        prop = torch.cuda.get_device_properties(k)
+        print("  cuda:%d  %s  %.0f MB" % (k, prop.name, prop.total_memory / MB))
+    print("requested device: %s" % device)
+    if device.type != "cuda":
+        print("RESULT: not a CUDA device, the DWN would not run on the GPU")
+        return
+    luts = args.luts or IMAGE_LUTS
+    print("test model: %d input bits, %d classes, LUTs %s, n=%d, batch %d" % (
+        args.checkSize, args.checkClasses, luts, args.n, args.batchSize))
+    try:
+        torch.cuda.reset_peak_memory_stats(device)
+        torch.manual_seed(0)
+        model, luts = build_model(args.checkSize, args.checkClasses, luts, args.n, args.groupSumTau)
+        model = model.to(device)
+        print("model parameters on: %s" % next(model.parameters()).device)
+        X = torch.randint(0, 2, (args.batchSize, args.checkSize), dtype=torch.uint8)
+        y = torch.randint(0, args.checkClasses, (args.batchSize,))
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+        start = time.time()
+        optimizer.zero_grad()
+        out = model(X.to(device).float())
+        nn.CrossEntropyLoss()(out, y.to(device)).backward()
+        optimizer.step()
+        torch.cuda.synchronize(device)
+        print("output on: %s; one training step in %.2f s" % (out.device, time.time() - start))
+        print("peak GPU memory allocated by torch: %.0f MB of %.0f MB" % (
+            torch.cuda.max_memory_allocated(device) / MB, torch.cuda.get_device_properties(device).total_memory / MB))
+        print("RESULT: OK, the DWN runs on %s (%s)" % (device, torch.cuda.get_device_name(device)))
+    except Exception as e:
+        print("RESULT: FAILED on %s: %s: %s" % (device, type(e).__name__, e))
+        traceback.print_exc()
+
+
 # ---------------------------------------------------------------- one configuration
 
 def run_task(task, args, device):
@@ -123,7 +175,12 @@ def run_task(task, args, device):
         p = prepare(task["dataset"], task["encoding"], task["seed"], task["bits"], args.dataDir)
         torch.manual_seed(task["seed"])
         model, luts = build_model(p["size"], p["classes"], task["luts"], task["n"], task["groupSumTau"])
+        if device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(device)
         model = model.to(device)
+        result["device"] = str(next(model.parameters()).device)
+        if device.type == "cuda":
+            result["deviceName"] = torch.cuda.get_device_name(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=task["lr"])
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.stepSize, gamma=args.gamma)
         loss_fn = nn.CrossEntropyLoss()
@@ -154,6 +211,7 @@ def run_task(task, args, device):
         result["traceback"] = traceback.format_exc()
     finally:
         if device.type == "cuda":
+            result["peakGpuMB"] = torch.cuda.max_memory_allocated(device) / MB
             torch.cuda.empty_cache()
     result["seconds"] = time.time() - start
     return result
@@ -227,9 +285,24 @@ def main():
     parser.add_argument("--dataDir", default="experiments/data")
     parser.add_argument("--wisardResults", default="experiments/results", help="results of run_grid.py (seeds and bits)")
     parser.add_argument("--resultsDir", default="experiments/results_dwn")
-    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--device", default="cuda",
+                        help="cuda (default; stops if CUDA is not available), cuda:1 for a second NVIDIA GPU, or cpu")
+    parser.add_argument("--check-device", action="store_true",
+                        help="only check that the DWN runs on the device (one training batch), then exit")
+    parser.add_argument("--checkSize", type=int, default=784 * 8, help="--check-device: input bits of the test model")
+    parser.add_argument("--checkClasses", type=int, default=10, help="--check-device: classes of the test model")
     parser.add_argument("--dry-run", action="store_true", help="only list what would run")
     args = parser.parse_args()
+
+    device = torch.device(args.device)
+    if args.check_device:
+        check_device(args, device)
+        return
+    if device.type == "cuda" and not torch.cuda.is_available():
+        parser.error("CUDA is not available to torch (torch %s, built with CUDA %s); "
+                     "run --check-device, or pass --device cpu explicitly" % (torch.__version__, torch.version.cuda))
+    if device.type == "cuda":
+        print("device: %s (%s)" % (device, torch.cuda.get_device_name(device)))
 
     tasks = build_tasks(args)
     done = done_keys(args.resultsDir, tasks)
@@ -241,7 +314,6 @@ def main():
     print("%d configurations, %d already done, %d to run on %s" % (len(tasks), len(tasks) - len(pending), len(pending), args.device))
     if args.dry_run or not pending:
         return
-    device = torch.device(args.device)
     if device.type != "cuda":
         print("WARNING: no CUDA; the LUT layers of torch-dwn are not implemented on the CPU", flush=True)
 
@@ -260,8 +332,10 @@ def main():
             errors += 1
             print("%s  ERROR %s\n%s" % (head, result["error"], result["traceback"]), flush=True)
         else:
-            print("%s  val %.4f  test %.4f  train %.0fs  infer %.1fs" % (
-                head, result["acc"]["val"], result["acc"]["test"], result["secondsTrain"], result["secondsInfer"]), flush=True)
+            gpu = "  %.0f MB GPU" % result["peakGpuMB"] if "peakGpuMB" in result else ""
+            print("%s  val %.4f  test %.4f  train %.0fs  infer %.1fs  on %s%s" % (
+                head, result["acc"]["val"], result["acc"]["test"], result["secondsTrain"], result["secondsInfer"],
+                result["device"], gpu), flush=True)
     print("finished: %d results, %d errors, %.1f h" % (len(pending), errors, (time.time() - start) / 3600))
 
 
