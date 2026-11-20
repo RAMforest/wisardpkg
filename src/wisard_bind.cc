@@ -108,7 +108,7 @@ PYBIND11_MODULE(wisardpkg, m){
       .def("json", (std::string (ClusWisardWrapper::*)()) &ClusWisardWrapper::json)
       .def("json", (std::string (ClusWisardWrapper::*)(bool)) &ClusWisardWrapper::json)
       .def("json", (std::string (ClusWisardWrapper::*)(bool,std::string)) &ClusWisardWrapper::json)
-      .def("getsizeof", &ClusWisardWrapper::getsizeof)
+      // .def("getsizeof", &ClusWisardWrapper::getsizeof)
     ;
 
 }
