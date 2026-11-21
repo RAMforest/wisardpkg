@@ -56,6 +56,10 @@ Usage (from the root of the repository):
   python experiments/measure_time.py                    # 7 models x 10 seeds; resumes if interrupted
   python experiments/measure_time.py --models dwn wisard-DAB --seeds 0
   python experiments/measure_time.py --summary
+  python experiments/measure_time.py --models epochs-DAB --epochs 12   # at most 12 epochs
+The maximum of epochs is part of the configuration: runs with another --epochs are kept apart in
+the same files, and --summary --epochs K prints those with K. As b_t and rho_t depend only on the
+epoch, a run with --epochs K is the run with more epochs stopped after its epoch K.
 """
 import argparse
 import collections
@@ -132,6 +136,8 @@ def config_text(t):
     text = "bits=%d n-tuple=%d" % (t["bits"], t["address"])
     if "rho0" in t and t["rho0"] is not None:
         text += " b=%d rho0=%g tau=%g" % (t["b"], t["rho0"], t["tau"])
+        if "epochs" in t:  # the configurations of the grid have no maximum of epochs of their own
+            text += " max %d ep." % t["epochs"]
     if "threads" in t:
         text += ", %d thr." % t["threads"]
     return text
@@ -310,14 +316,14 @@ def summary(out_dir, args, configs):
         return (fmt % np.mean(values)) + " +- " + (fmt % np.std(values)) if values else "-"
 
     print("\n%s, %s (mean +- std over the seeds)" % (DATASET, args.encoding))
-    print("%-17s %-44s %-20s %-20s %-20s %-20s %-18s %s" % (
+    print("%-17s %-60s %-20s %-20s %-20s %-20s %-18s %s" % (
         "model", "configuration", "seeds", "train (s)", "inference test (s)", "inference (us/ex.)", "acc test",
         "epochs run"))
     for key, group in groups.items():
         if not group:
             continue
         epochs = [r["epochsRun"] for r in group if "epochsRun" in r]
-        print("%-17s %-44s %-20s %-20s %-20s %-20s %-18s %s" % (
+        print("%-17s %-60s %-20s %-20s %-20s %-20s %-18s %s" % (
             expected[key]["model"], config_text(expected[key]), ",".join(str(s) for s in sorted(r["seed"] for r in group)),
             cell([r["secondsTrain"] for r in group], "%.3f"), cell([r["secondsInfer"] for r in group], "%.3f"),
             cell([r["usPerSample"] for r in group], "%.2f"), cell([r["accTest"] for r in group], "%.4f"),

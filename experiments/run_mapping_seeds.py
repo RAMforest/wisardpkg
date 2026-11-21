@@ -1,10 +1,14 @@
 """
-Mapping-seed exploration of the best base configuration of each dataset.
+Mapping-seed exploration of the best base architecture of each dataset, the same architecture for
+every bleaching mode.
 
 For every dataset, best_architecture.best_configs chooses, on the grid results of run_grid.py
-(--gridDir), the configuration with the best mean validation accuracy over the grid seeds. That
-configuration is then trained and evaluated with every mapping seed of --seeds, keeping the rest
-fixed, so the spread of the results is the spread of the RAM mapping only:
+(--gridDir), the ONE-SHOT WiSARD with ITERATIVE BLEACHING with the best mean validation accuracy
+over the grid seeds (ARCH_KIND and ARCH_VAL_MODE below, fixed: not an option). Its architecture
+(encoding, bits, address) is then FIXED: every mode of --valModes (default: iterative, DAB and
+rDAB) and every training run on it, so the modes differ only in the bleaching and can be compared.
+It is trained and evaluated with every mapping seed of --seeds, keeping the rest fixed, so the
+spread of the results is the spread of the RAM mapping only:
 
   split          fixed by --splitSeed (the same split of run_grid.py with seed=splitSeed)
   RAM mapping    the mapping seed (the same mapping of run_grid.py: RandomState(10007 + seed))
@@ -13,21 +17,24 @@ fixed, so the spread of the results is the spread of the RAM mapping only:
 So mapping seed s with --splitSeed s reproduces the run_grid.py result of seed s.
 
 Every run is one JSON line in <resultsDir>/<dataset>/<encoding>/split<k>.jsonl, with the
-configuration, splitSeed and mappingSeed. Runs already in the files are skipped, so an interrupted
-run resumes where it stopped; lines with "error" are run again. If the best configuration of a
-dataset changes (new grid results), its runs get new keys and the old ones stay in the file.
+configuration, splitSeed and mappingSeed; selectedOn records how the architecture was chosen
+(selectedOn.kind "oneshot", selectedOn.valMode "bleaching"). Runs already in the files are skipped, so an
+interrupted run resumes where it stopped; lines with "error" are run again. If the best
+architecture of a dataset changes (new grid results), its runs get new keys and the old ones stay
+in the file.
 
-With --trainings, the architecture of the best configuration (encoding, bits, address, valMode)
-is kept and every chosen training is run on it for every mapping seed: "oneshot" and/or "epochs"
-(every b x rho0 x tau of the grid of run_grid.py, or of --b/--rho0/--tau).
+With --trainings, every chosen training runs on the fixed architecture, in every mode of
+--valModes and for every mapping seed: "oneshot" and/or "epochs" (every b x rho0 x tau of the grid
+of run_grid.py, or of --b/--rho0/--tau). Without --trainings, only the one-shot.
 
 Usage:
-  python experiments/run_mapping_seeds.py --seeds $(seq 0 99) --jobs 10
-  python experiments/run_mapping_seeds.py --valModes bleaching --trainings oneshot epochs
-  python experiments/run_mapping_seeds.py --datasets blood iris --seeds 0 1 2 --valModes DAB rDAB
-  python experiments/run_mapping_seeds.py --kind epochs --seeds $(seq 0 29) --dry-run
+  python experiments/run_mapping_seeds.py --trainings oneshot epochs --dry-run   # 3 modes, the architecture of
+                                                                                 # the best iterative one-shot
+  python experiments/run_mapping_seeds.py --trainings oneshot epochs --seeds $(seq 0 29) --jobs 10
+  python experiments/run_mapping_seeds.py --datasets blood iris --seeds 0 1 2 --valModes DAB rDAB --trainings oneshot
 """
 import argparse
+import collections
 import json
 import multiprocessing
 import os
@@ -48,7 +55,10 @@ CONFIG_FIELDS = ("kind", "encoding", "bits", "address", "valMode", "b", "rho0", 
 ROW_FIELDS = ("encoding", "bits", "address", "valMode", "kind", "b", "rho0", "tau", "dataset", "splitSeed",
               "mappingSeed", "selectedOn", "bestEpoch", "accValPerEpoch", "nPenError", "nPenMargin", "bleaching",
               "size", "seconds")
-SELECTED_FIELDS = ("gridDir", "kind", "seeds", "val", "test")
+SELECTED_FIELDS = ("gridDir", "kind", "valMode", "seeds", "val", "test")  # valMode: the mode that chose the architecture
+ARCHITECTURE = ("encoding", "bits", "address")  # fixed for every mode of --valModes
+# the architecture is ALWAYS the one of the best one-shot with iterative bleaching of the grid (not an option)
+ARCH_KIND, ARCH_VAL_MODE = "oneshot", "bleaching"
 
 
 def normalize(row):
@@ -96,9 +106,8 @@ def run_task(task):
 
 
 def trainings(best_config, args):
-    """the training settings run on the architecture of the best configuration: the one-shot and/or
-    every epoch configuration of the grid (b x rho0 x tau); without --trainings, the best
-    configuration itself (with its own b, rho0, tau when --kind epochs)"""
+    """the training settings run on the fixed architecture: the one-shot and/or every epoch configuration
+    of the grid (b x rho0 x tau); without --trainings, the best configuration itself (the one-shot)"""
     if not args.trainings:
         return [{k: best_config[k] for k in ("kind", "b", "rho0", "tau")}]
     out = []
@@ -110,18 +119,54 @@ def trainings(best_config, args):
 
 
 def build_tasks(best, args):
-    """tasks ordered by dataset (the workers keep one dataset in memory), then mapping seed"""
+    """tasks ordered by dataset (the workers keep one dataset in memory), then mapping seed; every mode of
+    --valModes on the same architecture, the one of the best iterative one-shot"""
     tasks = []
     for name in args.datasets:
         if name not in best:
             continue
-        architecture = {k: best[name][k] for k in ("encoding", "bits", "address", "valMode")}
+        architecture = {k: best[name][k] for k in ARCHITECTURE}
+        selected = dict(gridDir=args.gridDir, kind=ARCH_KIND, valMode=ARCH_VAL_MODE, seeds=best[name]["seeds"],
+                        val=best[name]["val"], test=best[name]["test"])
         for seed in args.seeds:
-            for training in trainings(best[name], args):
-                tasks.append(dict(architecture, **training, dataset=name, splitSeed=args.splitSeed, mappingSeed=seed,
-                                  selectedOn=dict(gridDir=args.gridDir, kind=args.kind, seeds=best[name]["seeds"],
-                                                  val=best[name]["val"], test=best[name]["test"])))
+            for mode in args.valModes:
+                for training in trainings(best[name], args):
+                    tasks.append(dict(architecture, valMode=mode, **training, dataset=name, splitSeed=args.splitSeed,
+                                      mappingSeed=seed, selectedOn=selected))
     return tasks
+
+
+def seeds_text(seeds):
+    """runs of 3 or more consecutive seeds as a range: [0, 1, 2, 5] -> '0-2,5'"""
+    seeds, parts, start = sorted(seeds), [], 0
+    for i in range(1, len(seeds) + 1):
+        if i == len(seeds) or seeds[i] != seeds[i - 1] + 1:
+            run = seeds[start:i]
+            parts += ["%d-%d" % (run[0], run[-1])] if len(run) >= 3 else [str(s) for s in run]
+            start = i
+    return ",".join(parts)
+
+
+def print_pending(pending):
+    """the runs still to do, one line per dataset, architecture, valMode and training: how many runs, which
+    mapping seeds and, for the epochs, which b x rho0 x tau"""
+    groups = collections.OrderedDict()
+    for t in pending:
+        key = (t["dataset"], t["encoding"], t["bits"], t["address"], t["valMode"], t["kind"])
+        groups.setdefault(key, []).append(t)
+    if not groups:
+        print("nothing to run: every run is already in the results")
+        return
+    print("runs to do (dataset, architecture encoding bits/address, valMode, training):")
+    for (name, encoding, bits, address, mode, kind), group in groups.items():
+        line = "  %-14s %-12s %2d/%-2d  %-9s %-7s %5d runs  mapping seeds %s" % (
+            name, encoding, bits, address, mode, kind, len(group), seeds_text({t["mappingSeed"] for t in group}))
+        if kind == "epochs":
+            configs = sorted({(t["b"], t["rho0"], t["tau"]) for t in group})
+            line += "  (%d b x rho0 x tau: b %s, rho0 %s, tau %s)" % (
+                len(configs), sorted({c[0] for c in configs}), sorted({c[1] for c in configs}),
+                sorted({c[2] for c in configs}))
+        print(line)
 
 
 def done_keys(results_dir, tasks):
@@ -143,12 +188,10 @@ def main():
                         help="encodings the best configuration may use (default: all)")
     parser.add_argument("--seeds", type=int, nargs="+", default=list(range(30)), help="mapping seeds to run")
     parser.add_argument("--valModes", nargs="+", default=rg.VAL_MODES, choices=rg.VAL_MODES,
-                        help="validation modes the best configuration may use (default: all)")
-    parser.add_argument("--kind", default="oneshot", choices=("oneshot", "epochs"),
-                        help="training whose grid results choose the architecture (encoding, bits, address, valMode)")
+                        help="bleaching modes run on the architecture of the best iterative one-shot (default: all)")
     parser.add_argument("--trainings", nargs="+", choices=("oneshot", "epochs"),
-                        help="trainings run on the chosen architecture: the one-shot and/or every epoch configuration "
-                             "(--b x --rho0 x --tau); default: only the best configuration itself")
+                        help="trainings run on that architecture: the one-shot and/or every epoch configuration "
+                             "(--b x --rho0 x --tau); default: only the one-shot")
     parser.add_argument("--b", type=int, nargs="+", default=rg.B_GRID)
     parser.add_argument("--rho0", type=float, nargs="+", default=rg.RHO_GRID)
     parser.add_argument("--tau", type=float, nargs="+", default=rg.TAU_GRID)
@@ -162,9 +205,11 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="print the chosen configurations and the counts, run nothing")
     args = parser.parse_args()
 
-    best = best_architecture.best_configs(args.gridDir, args.kind, args.encodings, args.valModes, args.gridSeeds,
+    # the architecture: the best one-shot with iterative bleaching of the grid, shared by every mode and training
+    best = best_architecture.best_configs(args.gridDir, ARCH_KIND, args.encodings, [ARCH_VAL_MODE], args.gridSeeds,
                                           args.minSeeds, args.datasets)
-    print("best configuration per dataset (chosen on %s):" % args.gridDir)
+    print("architecture per dataset: best one-shot with iterative bleaching on %s, run with valModes %s:" % (
+        args.gridDir, " ".join(args.valModes)))
     for name in args.datasets:
         if name in best:
             c = best[name]
@@ -172,11 +217,12 @@ def main():
                 name, " ".join("%s=%s" % (k, c[k]) for k in CONFIG_FIELDS if c[k] is not None),
                 ",".join(map(str, c["seeds"])), c["val"], c["test"]))
         else:
-            print("  %-14s no grid results: skipped" % name)
+            print("  %-14s no one-shot results with iterative bleaching in the grid: skipped" % name)
 
     tasks = build_tasks(best, args)
     done = done_keys(args.resultsDir, tasks)
     pending = [t for t in tasks if (results_path(args.resultsDir, t), task_key(t)) not in done]
+    print_pending(pending)
     print("%d runs, %d already done, %d to run with %d jobs" % (len(tasks), len(tasks) - len(pending), len(pending), args.jobs))
     if args.dry_run or not pending:
         return
