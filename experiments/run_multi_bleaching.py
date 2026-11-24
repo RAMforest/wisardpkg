@@ -2,7 +2,7 @@
 Multi-bleaching benchmark: every bleaching base with and without the multi-bleaching layer, on
 the same trained network (RFC-001).
 
-A network is one (dataset, encoding, seed, bits, address, mapping). It is trained once (one-shot)
+A network is one (dataset, encoding, seed, bits, address). It is trained once (one-shot)
 and classified, on validation and test, with every rule:
 
   base                 iterative, bbleaching, dab                      (Wisard(bleaching=...))
@@ -17,11 +17,10 @@ encoders.Encoder with binary_as_bit=True: the thermometer only on numeric featur
 more values, one-hot only on nominal features with three or more categories, ONE bit for a
 feature with two values (nominal or numeric) and no bit for a constant one. On datasets without
 binary or constant features this is the encoding of run_grid.py, and the base rules with the
-random mapping reproduce its one-shot results. Mappings (--mappings):
-  random     a seeded permutation of the bits, the same for every class (run_grid.mapping)
-  per-class  one seeded permutation per class
-  linear     the bits in order (tuples of neighbouring bits)
-all with complete addressing: the last RAM is filled with random bits.
+random mapping reproduce its one-shot results. The mapping is always "random": a seeded
+permutation of the bits, the same for every class (run_grid.mapping), with complete addressing:
+the last RAM is filled with random bits. Every network keeps mapping="random" in its JSON line and
+in the name of its files.
 
 Every network is one JSON line in <resultsDir>/<dataset>/<encoding>/seed<k>.jsonl; networks
 already in the files are skipped, so an interrupted run resumes. Per rule and part: accuracy,
@@ -70,7 +69,7 @@ import wisardpkg as wp  # noqa: E402
 
 BASES = ["iterative", "bbleaching", "dab"]
 THRESHOLDS = [0.05, 0.1, 0.2, 0.5, 1.0]
-MAPPINGS = ["random", "per-class", "linear"]
+MAPPING = "random"  # the only mapping; kept in the results and in the file names
 # from the lightest to the heaviest; cifar10 has no grid results and stays out
 DATASETS = ["iris", "blood", "australian", "wine-red", "segment", "jasmine", "wine-white", "sylvine", "phoneme",
             "christine", "letter", "nomao", "higgs", "miniboone", "skin-seg", "mnist", "fashion-mnist", "covertype", "jsc"]
@@ -78,21 +77,6 @@ DATASETS = ["iris", "blood", "australian", "wine-red", "segment", "jasmine", "wi
 
 def rule_name(base, threshold=None):
     return base if threshold is None else "%s+multi@%g" % (base, threshold)
-
-
-def make_mapping(kind, size, address, seed, labels):
-    if kind == "random":
-        return rg.mapping(size, address, seed, labels)
-    rng = np.random.RandomState(10007 + seed)
-    rams = -(-size // address)
-
-    def complete(order):
-        return np.concatenate([order, rng.randint(0, size, rams * address - size)]).reshape(rams, address).tolist()
-
-    if kind == "linear":
-        indexes = complete(np.arange(size))
-        return {label: indexes for label in labels}
-    return {label: complete(rng.permutation(size)) for label in labels}
 
 
 _prepared = collections.OrderedDict()
@@ -179,7 +163,7 @@ def run_task(task):
         labels = sorted(set(p["labels"]) | set(p["yval"]) | set(p["ytest"]))
         index = {label: i for i, label in enumerate(labels)}
         model = wp.Wisard(task["address"], returnClassesDegrees=True, returnBleachingInfo=True,
-                          mapping=make_mapping(task["mapping"], p["size"], task["address"], task["seed"], p["labels"]),
+                          mapping=rg.mapping(p["size"], task["address"], task["seed"], p["labels"]),
                           tieTolerance=task["tieTolerance"], nextCut=task["nextCut"], **rg.DAB_OPTIONS)
         t0 = time.time()
         model.train(p["train"])
@@ -299,11 +283,10 @@ def build_tasks(args):
                     for address in (args.address or grid["address"]):
                         if address > sizes[bits]:
                             continue
-                        for kind in args.mappings:
-                            tasks.append(dict(dataset=name, encoding=encoding, seed=seed, bits=bits, address=address, mapping=kind,
-                                              thresholds=args.thresholds, tieTolerance=args.tieTolerance, nextCut=args.nextCut,
-                                              traces=not args.no_traces, checkpoints=not args.no_checkpoints,
-                                              resultsDir=args.resultsDir))
+                        tasks.append(dict(dataset=name, encoding=encoding, seed=seed, bits=bits, address=address, mapping=MAPPING,
+                                          thresholds=args.thresholds, tieTolerance=args.tieTolerance, nextCut=args.nextCut,
+                                          traces=not args.no_traces, checkpoints=not args.no_checkpoints,
+                                          resultsDir=args.resultsDir))
     return tasks
 
 
@@ -326,7 +309,6 @@ def main():
     parser.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2, 3, 4])
     parser.add_argument("--bits", type=int, nargs="+", help="overrides the bits grid of run_grid.py")
     parser.add_argument("--address", type=int, nargs="+", help="overrides the address grid of run_grid.py")
-    parser.add_argument("--mappings", nargs="+", default=MAPPINGS, choices=MAPPINGS)
     parser.add_argument("--thresholds", type=float, nargs="+", default=THRESHOLDS, help="C_th of the multi rules")
     parser.add_argument("--tieTolerance", type=float, default=0.0, help="bbleaching: confidence <= it is a tie")
     parser.add_argument("--nextCut", default="ref", choices=("ref", "untie"), help="bbleaching in the later rounds")
