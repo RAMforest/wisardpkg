@@ -22,8 +22,13 @@ public:
 
   // also gives how many thresholds were tried and the last one, the one that made the labels
   static std::map<std::string, int> makeConfidenceless(std::map<std::string,std::vector<int>>& allvotes, const bool bleachingActivated, const int confidence, int& steps, int& threshold) {
+    return makeConfidenceless(allvotes, bleachingActivated, confidence, steps, threshold, 1);
+  }
+
+  // the same search starting at the threshold start (1: the bleaching of the package)
+  static std::map<std::string, int> makeConfidenceless(std::map<std::string,std::vector<int>>& allvotes, const bool bleachingActivated, const int confidence, int& steps, int& threshold, const int start) {
     std::map<std::string, int> labels;
-    int bleaching = 1;
+    int bleaching = start;
     std::tuple<bool,int> ambiguity;
     steps = 0;
 

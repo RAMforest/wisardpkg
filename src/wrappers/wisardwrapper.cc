@@ -55,8 +55,57 @@ public:
 
       if(std::string(py::str(arg.first)).compare("dabRemoval") == 0)
         dabRemoval = arg.second.cast<std::string>();
+
+      if(std::string(py::str(arg.first)).compare("multiBleaching") == 0)
+        multiBleaching = arg.second.cast<bool>();
+
+      if(std::string(py::str(arg.first)).compare("confidenceThreshold") == 0)
+        confidenceThreshold = arg.second.cast<double>();
+
+      if(std::string(py::str(arg.first)).compare("tieTolerance") == 0)
+        tieTolerance = arg.second.cast<double>();
+
+      if(std::string(py::str(arg.first)).compare("nextCut") == 0)
+        nextCut = arg.second.cast<std::string>();
+
+      if(std::string(py::str(arg.first)).compare("maxRounds") == 0)
+        maxRounds = arg.second.cast<int>();
     }
     checkBleachingOptions();
+  }
+
+  // changes the bleaching of classify on a trained model (the counters are not touched), so
+  // several policies can be compared on the same network. Unknown options are an error and a
+  // rejected value leaves the model as it was.
+  void pySetBleaching(py::kwargs kwargs){
+    const bool oldActivated = bleachingActivated, oldMulti = multiBleaching;
+    const int oldConfidence = confidence, oldRounds = maxRounds;
+    const std::string oldMode = bleachingMode, oldRemoval = dabRemoval, oldCut = nextCut;
+    const double oldTolerance = confidenceTolerance, oldFreq = freqTolerance, oldThreshold = confidenceThreshold, oldTie = tieTolerance;
+    try{
+      for(auto arg: kwargs){
+        const std::string key = py::str(arg.first);
+        if(key == "bleaching") bleachingMode = arg.second.cast<std::string>();
+        else if(key == "bleachingActivated") bleachingActivated = arg.second.cast<bool>();
+        else if(key == "confidence") confidence = arg.second.cast<int>();
+        else if(key == "confidenceTolerance") confidenceTolerance = arg.second.cast<double>();
+        else if(key == "freqTolerance") freqTolerance = arg.second.cast<double>();
+        else if(key == "dabRemoval") dabRemoval = arg.second.cast<std::string>();
+        else if(key == "multiBleaching") multiBleaching = arg.second.cast<bool>();
+        else if(key == "confidenceThreshold") confidenceThreshold = arg.second.cast<double>();
+        else if(key == "tieTolerance") tieTolerance = arg.second.cast<double>();
+        else if(key == "nextCut") nextCut = arg.second.cast<std::string>();
+        else if(key == "maxRounds") maxRounds = arg.second.cast<int>();
+        else throw Exception("Unknown option for setBleaching!");
+      }
+      checkBleachingOptions();
+    }
+    catch(...){
+      bleachingActivated = oldActivated; multiBleaching = oldMulti; confidence = oldConfidence; maxRounds = oldRounds;
+      bleachingMode = oldMode; dabRemoval = oldRemoval; nextCut = oldCut;
+      confidenceTolerance = oldTolerance; freqTolerance = oldFreq; confidenceThreshold = oldThreshold; tieTolerance = oldTie;
+      throw;
+    }
   }
 
   // the confidence is the one of the policy (for iterative, Bleaching::getConfidence as before)
@@ -84,6 +133,10 @@ public:
     if(returnBleachingInfo){
       labels[i]["steps"] = result.steps;
       labels[i]["finalThreshold"] = result.finalThreshold;
+      if(!result.thresholds.empty()){  // bbleaching and multiBleaching: every round and its confidence
+        labels[i]["thresholds"] = result.thresholds;
+        labels[i]["confidences"] = result.confidences;
+      }
     }
 
     if(!asDict){

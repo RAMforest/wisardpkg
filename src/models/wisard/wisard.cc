@@ -57,6 +57,21 @@ public:
     value = c["dabRemoval"];
     dabRemoval = value.is_null() ? "inclusive" : value.get<std::string>();
 
+    value = c["multiBleaching"];
+    multiBleaching = value.is_null() ? false : value.get<bool>();
+
+    value = c["confidenceThreshold"];
+    confidenceThreshold = value.is_null() ? 0.1 : value.get<double>();
+
+    value = c["tieTolerance"];
+    tieTolerance = value.is_null() ? 0.0 : value.get<double>();
+
+    value = c["nextCut"];
+    nextCut = value.is_null() ? "ref" : value.get<std::string>();
+
+    value = c["maxRounds"];
+    maxRounds = value.is_null() ? 64 : value.get<int>();
+
     checkBleachingOptions();
   }
 
@@ -641,12 +656,23 @@ protected:
 
   // with bleachingActivated=false there is no bleaching, whatever the policy
   std::unique_ptr<BleachingPolicy> makeBleachingPolicy() const{
+    std::unique_ptr<BleachingPolicy> base = makeBasePolicy();
+    if(bleachingActivated && multiBleaching){
+      return std::unique_ptr<BleachingPolicy>(new MultiBleaching(std::move(base), confidenceThreshold, maxRounds));
+    }
+    return base;
+  }
+
+  std::unique_ptr<BleachingPolicy> makeBasePolicy() const{
     const bool inclusive = dabRemoval == "inclusive";
     if(bleachingActivated && bleachingMode == "dab"){
       return std::unique_ptr<BleachingPolicy>(new DAB(confidenceTolerance, inclusive));
     }
     if(bleachingActivated && bleachingMode == "rdab"){
       return std::unique_ptr<BleachingPolicy>(new RDAB(confidenceTolerance, freqTolerance, inclusive));
+    }
+    if(bleachingActivated && bleachingMode == "bbleaching"){
+      return std::unique_ptr<BleachingPolicy>(new BBleachingPolicy(tieTolerance, nextCut == "ref"));
     }
     return std::unique_ptr<BleachingPolicy>(new IterativeBleaching(bleachingActivated, confidence));
   }
@@ -662,8 +688,23 @@ protected:
   }
 
   void checkBleachingOptions() const{
-    if(bleachingMode != "iterative" && bleachingMode != "dab" && bleachingMode != "rdab"){
-      throw Exception("The bleaching must be iterative, dab or rdab!");
+    if(bleachingMode != "iterative" && bleachingMode != "dab" && bleachingMode != "rdab" && bleachingMode != "bbleaching"){
+      throw Exception("The bleaching must be iterative, dab, rdab or bbleaching!");
+    }
+    if(multiBleaching && bleachingMode == "rdab"){
+      throw Exception("The multiBleaching works over iterative, dab or bbleaching, not rdab!");
+    }
+    if(nextCut != "ref" && nextCut != "untie"){
+      throw Exception("The nextCut must be ref or untie!");
+    }
+    if(confidenceThreshold < 0 || confidenceThreshold > 1){
+      throw Exception("The confidenceThreshold must be in [0, 1]!");
+    }
+    if(tieTolerance < 0 || tieTolerance >= 1){
+      throw Exception("The tieTolerance must be in [0, 1)!");
+    }
+    if(maxRounds < 1){
+      throw Exception("The maxRounds must be at least 1!");
     }
     if(dabRemoval != "inclusive" && dabRemoval != "exclusive"){
       throw Exception("The dabRemoval must be inclusive or exclusive!");
@@ -711,7 +752,12 @@ protected:
       {"bleaching", bleachingMode},
       {"confidenceTolerance", confidenceTolerance},
       {"freqTolerance", freqTolerance},
-      {"dabRemoval", dabRemoval}
+      {"dabRemoval", dabRemoval},
+      {"multiBleaching", multiBleaching},
+      {"confidenceThreshold", confidenceThreshold},
+      {"tieTolerance", tieTolerance},
+      {"nextCut", nextCut},
+      {"maxRounds", maxRounds}
     };
     return config;
   }
@@ -758,9 +804,14 @@ protected:
   bool returnClassesDegrees;
   bool returnBleachingInfo;
   int confidence;
-  std::string bleachingMode;  // iterative, dab or rdab (bleachingpolicy.cc)
+  std::string bleachingMode;  // iterative, dab, rdab or bbleaching (bleachingpolicy.cc)
   double confidenceTolerance;
   double freqTolerance;
   std::string dabRemoval;
+  bool multiBleaching;         // sums the votes of the rounds of the base policy (MultiBleaching)
+  double confidenceThreshold;  // multiBleaching: a round with confidence above it is the last
+  double tieTolerance;         // bbleaching: confidence <= it is a tie
+  std::string nextCut;         // bbleaching in the later rounds of multiBleaching: ref or untie
+  int maxRounds;               // multiBleaching: most rounds
   std::map<std::string, Discriminator> discriminators;
 };

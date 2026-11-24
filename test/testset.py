@@ -2,6 +2,7 @@ from unittest import main
 from test_wisard import WisardTestCase
 from test_wisard_epochs import WisardEpochsTestCase
 from test_wisard_bleaching import WisardBleachingTestCase, SegmentEpochsBleachingTestCase
+from test_wisard_multi_bleaching import WisardMultiBleachingTestCase
 from test_discriminator import DiscriminatorTestCase
 from test_cluswisard import ClusWisardTestCase
 from test_kernel_canvas import KernelCanvasTestCase

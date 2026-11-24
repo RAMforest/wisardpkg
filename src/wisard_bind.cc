@@ -87,6 +87,7 @@ PYBIND11_MODULE(wisardpkg, m){
       .def("responses", (std::map<std::string,int> (WisardWrapper::*)(const std::vector<int>&, const int) const) &WisardWrapper::responses)
       .def("activeAddresses", &WisardWrapper::activeAddresses)
       .def("penalize", &WisardWrapper::pyPenalize)
+      .def("setBleaching", &WisardWrapper::pySetBleaching)
       .def("jsonConfig", &WisardWrapper::jsonConfig)
       .def("json", (std::string (WisardWrapper::*)()) &WisardWrapper::json)
       .def("json", (std::string (WisardWrapper::*)(bool)) &WisardWrapper::json)
