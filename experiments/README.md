@@ -79,8 +79,10 @@ layer (`Wisard(multiBleaching=True)`), on the same trained one-shot network.
   features, the base rules with the random mapping reproduce the one-shot results of `run_grid.py`.
 - **Outputs of every network**, under `results_multi/`: the JSON line with the scores of every rule;
   `checkpoints/.../<network>.json.gz`, the trained model (`run_multi_bleaching.load_checkpoint`
-  gives the `Wisard` back); `logs/.../<network>.log`; and, with `--traces`,
-  `traces/.../<network>.npz` with the predictions and the threshold and confidence of every round.
+  gives the `Wisard` back); `logs/.../<network>.log`, which also has, per base, one line per round
+  of the multi-bleaching with the threshold found and the confidence at it; and
+  `traces/.../<network>.npz`, per example, with the predictions and the threshold and confidence of
+  every round (`--no-traces` skips it).
 
 ```
 python experiments/run_multi_bleaching.py --dry-run                       # networks per dataset

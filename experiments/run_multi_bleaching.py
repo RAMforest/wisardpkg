@@ -34,18 +34,20 @@ Every network also leaves, under <resultsDir>, with the name b<bits>_a<address>_
       gzipped: configuration, mapping and counters), written right after the training;
       load_checkpoint(path) gives the Wisard back (--no-checkpoints skips them)
   logs/<dataset>/<encoding>/seed<k>/<network>.log              what was done and when: sizes,
-      training time, one line per rule and part with its scores and time, the checkpoint, and the
-      traceback when the network fails
-
-With --traces, the prediction of every rule and, for the largest C_th of every base, the threshold
-and the confidence of every round of every example go to
-traces/<dataset>/<encoding>/seed<k>/<network>.npz (the rounds of a smaller C_th are
-a prefix: the rounds up to the first one with confidence above it).
+      training time, one line per rule and part with its scores and time, the checkpoint, the
+      traceback when the network fails, and, for every base and part, one line per ROUND of the
+      multi-bleaching with the largest C_th: how many examples reached the round, the threshold
+      found (mean, median, max) and the confidence at it (also in "perRound" of the JSON line)
+  traces/<dataset>/<encoding>/seed<k>/<network>.npz            per example: the prediction of
+      every rule ("<part>|<rule>") and, for the largest C_th of every base, one entry per round
+      ("<part>|<base>|example", "|round", "|threshold", "|confidence"): the threshold found in
+      that round and the confidence at it. The rounds of a smaller C_th are the first ones, up to
+      the first confidence above it. --no-traces skips this file (it is the large one).
 
 Usage:
   python experiments/run_multi_bleaching.py --dry-run
   python experiments/run_multi_bleaching.py --datasets iris blood australian --jobs 6
-  python experiments/run_multi_bleaching.py --datasets jsc covertype --jobs 2 --traces
+  python experiments/run_multi_bleaching.py --datasets jsc covertype --jobs 2 --no-traces
 """
 import argparse
 import collections
@@ -223,11 +225,27 @@ def run_task(task):
                         part, rule_name(base, c_th), row["acc"], row["bal_acc"], row["macro_f1"], row["conf"], row["steps"],
                         row["rounds"], row["changed"], row["onlyBase"], row["onlyMulti"], row["seconds"])
                     traces["%s|%s" % (part, rule_name(base, c_th))] = m_pred.astype(np.int16)
-                    if task["traces"] and c_th == max(task["thresholds"]):
-                        key = "%s|%s|" % (part, base)
-                        traces[key + "example"] = np.repeat(np.arange(len(out), dtype=np.int32), rounds)
-                        traces[key + "threshold"] = np.concatenate([o["thresholds"] for o in out]).astype(np.int32)
-                        traces[key + "confidence"] = np.concatenate([o["confidences"] for o in out]).astype(np.float32)
+                    if c_th == max(task["thresholds"]):
+                        # every round of every example: the threshold found and the confidence at it. The
+                        # rounds of a smaller C_th are the first ones, up to the first confidence above it.
+                        cut = np.concatenate([o["thresholds"] for o in out]).astype(np.int32)
+                        cut_conf = np.concatenate([o["confidences"] for o in out]).astype(np.float32)
+                        number = (np.arange(len(cut)) - np.repeat(np.cumsum(rounds) - rounds, rounds) + 1).astype(np.int16)
+                        per_round = row["perRound"] = []
+                        for k in range(1, int(rounds.max()) + 1):
+                            here = number == k
+                            per_round.append(dict(round=k, examples=int(here.sum()), threshold=float(cut[here].mean()),
+                                                  thresholdMedian=float(np.median(cut[here])), thresholdMax=int(cut[here].max()),
+                                                  confidence=float(cut_conf[here].mean()), tied=float((cut_conf[here] == 0).mean())))
+                            log("%-4s %-10s round %2d: %7d examples  threshold mean %9.2f median %7.0f max %7d  confidence mean %.4f  tied %5.1f%%",
+                                part, base, k, per_round[-1]["examples"], per_round[-1]["threshold"], per_round[-1]["thresholdMedian"],
+                                per_round[-1]["thresholdMax"], per_round[-1]["confidence"], 100 * per_round[-1]["tied"])
+                        if task["traces"]:
+                            key = "%s|%s|" % (part, base)
+                            traces[key + "example"] = np.repeat(np.arange(len(out), dtype=np.int32), rounds)
+                            traces[key + "round"] = number
+                            traces[key + "threshold"] = cut
+                            traces[key + "confidence"] = cut_conf
             traces[part + "|expected"] = expected.astype(np.int16)
         result.update(size=p["size"], features=p["features"], rams=-(-p["size"] // task["address"]), labels=labels,
                       trainCounts=[int(n) for n in np.bincount([index[l] for l in _train_labels(p)], minlength=len(labels))],
@@ -284,7 +302,7 @@ def build_tasks(args):
                         for kind in args.mappings:
                             tasks.append(dict(dataset=name, encoding=encoding, seed=seed, bits=bits, address=address, mapping=kind,
                                               thresholds=args.thresholds, tieTolerance=args.tieTolerance, nextCut=args.nextCut,
-                                              traces=args.traces, checkpoints=not args.no_checkpoints,
+                                              traces=not args.no_traces, checkpoints=not args.no_checkpoints,
                                               resultsDir=args.resultsDir))
     return tasks
 
@@ -312,7 +330,7 @@ def main():
     parser.add_argument("--thresholds", type=float, nargs="+", default=THRESHOLDS, help="C_th of the multi rules")
     parser.add_argument("--tieTolerance", type=float, default=0.0, help="bbleaching: confidence <= it is a tie")
     parser.add_argument("--nextCut", default="ref", choices=("ref", "untie"), help="bbleaching in the later rounds")
-    parser.add_argument("--traces", action="store_true", help="also saves predictions, thresholds and confidences per example")
+    parser.add_argument("--no-traces", action="store_true", help="does not save, per example, the predictions and the threshold and confidence of every round")
     parser.add_argument("--no-checkpoints", action="store_true", help="does not save the trained model of every network")
     parser.add_argument("--dataDir", default="experiments/data")
     parser.add_argument("--resultsDir", default="experiments/results_multi")
