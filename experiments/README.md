@@ -56,3 +56,32 @@ python experiments/measure_memory.py --seeds 1 --jobs 2          # RAM of traini
 
 Images with many bits make large models (CIFAR-10 with 8 bits and address 16: about 1500 RAMs per
 class and millions of stored addresses); run them with fewer `--jobs` to bound the memory.
+
+## Multi-bleaching benchmark
+
+Compares every bleaching base (iterative, bbleaching, dab) with and without the multi-bleaching
+layer (`Wisard(multiBleaching=True)`), on the same trained one-shot network.
+
+| file | role |
+|---|---|
+| `run_multi_bleaching.py` | trains every network of the grid once and classifies validation and test with the 18 rules (3 bases x {no multi, multi with C_th in 0.05, 0.1, 0.2, 0.5, 1.0}); one JSON line per network in `results_multi/`, plus a checkpoint and a log per network |
+| `summarize_multi_bleaching.py` | paired comparison of every multi rule with its base: mean and standard deviation of the difference over the networks, Wilcoxon with Holm correction, and the same difference on the best network of validation |
+
+- **Datasets**: the ones of the epoch benchmark with results, plus `covertype`, `letter`,
+  `wine-white` and `wine-red` (`OPENML_EXTRA` in `datasets.py`; they are not in `NAMES`, so the
+  default grids above do not change).
+- **Networks**: distributive encoding, the bits x address grid of `run_grid.py`, three mappings
+  (`random`, the one of `run_grid.py`; `per-class`; `linear`) and seeds 0..4. With the random
+  mapping, the base rules reproduce the one-shot results of `run_grid.py`.
+- **Outputs of every network**, under `results_multi/`: the JSON line with the scores of every rule;
+  `checkpoints/.../<network>.json.gz`, the trained model (`run_multi_bleaching.load_checkpoint`
+  gives the `Wisard` back); `logs/.../<network>.log`; and, with `--traces`,
+  `traces/.../<network>.npz` with the predictions and the threshold and confidence of every round.
+
+```
+python experiments/run_multi_bleaching.py --dry-run                       # networks per dataset
+python experiments/run_multi_bleaching.py --datasets iris blood --jobs 6  # resumes if interrupted
+python experiments/summarize_multi_bleaching.py --out experiments/results_multi/summary.md
+```
+
+OpenML datasets are parsed once and kept in `<dataDir>/parsed/<name>.npz`.

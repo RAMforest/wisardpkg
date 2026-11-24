@@ -33,8 +33,18 @@ OPENML = {
     "jsc": 42468,         # hls4ml_lhc_jets_hlf, 830000 rows, 5 classes
 }
 
+# multiclass datasets with unequal classes, used by the multi-bleaching benchmark only: they are
+# not in NAMES, so the grids of the epoch benchmark do not change
+OPENML_EXTRA = {
+    "covertype": 1596,    # 581012 rows, 7 classes, the two largest hold 85% of the rows
+    "letter": 6,          # 20000 rows, 26 classes
+    "wine-white": 40498,  # 4898 rows, 7 quality levels
+    "wine-red": 40691,    # 1599 rows, 6 quality levels
+}
+
 IMAGES = ("mnist", "fashion-mnist", "cifar10")
 NAMES = tuple(OPENML) + IMAGES
+ALL_NAMES = NAMES + tuple(OPENML_EXTRA)
 
 URLS = {
     "mnist": "https://storage.googleapis.com/cvdf-datasets/mnist/",
@@ -61,19 +71,36 @@ class Dataset(object):
 
 
 def load(name, data_dir):
-    if name in OPENML:
+    if name in OPENML or name in OPENML_EXTRA:
         return load_openml(name, data_dir)
     if name in ("mnist", "fashion-mnist"):
         return load_idx_images(name, data_dir)
     if name == "cifar10":
         return load_cifar10(data_dir)
-    raise ValueError("unknown dataset %s (choose from %s)" % (name, ", ".join(NAMES)))
+    raise ValueError("unknown dataset %s (choose from %s)" % (name, ", ".join(ALL_NAMES)))
 
 
 def load_openml(name, data_dir):
+    # the parsed dataset is kept in <dataDir>/parsed/<name>.npz: parsing the ARFF again in every
+    # worker is slow, and scikit-learn downloads the file again when its parser fails on it
+    cached = os.path.join(data_dir, "parsed", name + ".npz")
+    if os.path.exists(cached):
+        with np.load(cached, allow_pickle=False) as z:
+            return Dataset(name, z["X"], z["y"], z["nominal"])
+    ds = parse_openml(name, data_dir)
+    os.makedirs(os.path.dirname(cached), exist_ok=True)
+    np.savez(cached + ".part.npz", X=ds.X, y=ds.y, nominal=ds.nominal)
+    os.replace(cached + ".part.npz", cached)
+    return ds
+
+
+def parse_openml(name, data_dir):
     from sklearn.datasets import fetch_openml
-    bunch = fetch_openml(data_id=OPENML[name], as_frame=True, parser="auto",
-                         data_home=os.path.join(data_dir, "openml"))
+    options = dict(data_id=dict(OPENML, **OPENML_EXTRA)[name], as_frame=True, data_home=os.path.join(data_dir, "openml"))
+    try:
+        bunch = fetch_openml(parser="auto", **options)
+    except TypeError:  # the pandas parser fails on nominal columns with numeric categories (covertype, wine)
+        bunch = fetch_openml(parser="liac-arff", **options)
     frame, target = bunch.data, bunch.target
     keep = ~(frame.isna().any(axis=1) | target.isna()).to_numpy()
     frame, target = frame[keep], target[keep]

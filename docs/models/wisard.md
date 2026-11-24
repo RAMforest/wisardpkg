@@ -30,6 +30,25 @@ The default value for the optional parameters are showing in the example above.
 - **base: [int]** this is the base of addressing, by default is binary addressing.
 - **confidence: [int]** this is the difference between the number of active RAMs of the first and second discriminators classified. It is used in the classification process.
 
+#### Bleaching policies:
+The bleaching of classify is chosen with **bleaching: [string]**. A counter votes when it is greater than or equal to the threshold.
+- **"iterative"** (default): the threshold goes 1, 2, 3, ... while there is a tie.
+- **"dab"** and **"rdab"**: dynamic adaptive bleaching and its refinement, with **confidenceTolerance**, **freqTolerance** and **dabRemoval**.
+- **"bbleaching"**: binary search of the threshold in [1, B_k) with the geometric mean, B_k being the largest counter read. **tieTolerance: [float]** (default 0) is the confidence up to which a threshold still counts as a tie.
+
+**multiBleaching: [boolean]** (default false) adds multi-bleaching over "iterative", "dab" or "bbleaching". The base decides at a threshold; while the confidence of that round, (r1 - r2)/r1 of the votes at it, is not above **confidenceThreshold: [float]** (default 0.1) and some counter is above the threshold, the base runs again from the next threshold. The score of a class is the sum of its votes at the deciding thresholds of all the rounds, so a RAM with a large counter scores once per round it survives. **maxRounds: [int]** (default 64) limits the rounds; **nextCut: [string]** ("ref" or "untie") is how "bbleaching" accepts a threshold in the rounds after the first.
+
+```python
+wsd = Wisard(8, bleaching="dab", multiBleaching=True, confidenceThreshold=0.2, returnBleachingInfo=True)
+wsd.train(X, y)
+out = wsd.classify(X)
+# {'class': 'cold', 'steps': 5, 'finalThreshold': 7, 'thresholds': [3, 6, 7], 'confidences': [0.33, 0.5, 1.0]}
+
+# the same trained model with another policy: the counters are not touched
+wsd.setBleaching(bleaching="iterative", multiBleaching=False)
+```
+With **returnBleachingInfo: [boolean]** every output has 'steps' (how many times the votes were counted) and 'finalThreshold'; with "bbleaching" or multiBleaching it also has 'thresholds' and 'confidences', one value per round. With multiBleaching, 'confidence' and 'classesDegrees' are the ones of the summed scores.
+
 #### Types of return of classify:
 By default the parameters 'returnActivationDegree', returnClassesDegrees and 'returnConfidence' are false, for performance reasons.
 - **returnActivationDegree: [boolean]** when true, add the activation degree value to each output.
