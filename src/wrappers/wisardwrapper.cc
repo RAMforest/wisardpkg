@@ -44,6 +44,9 @@ public:
       if(std::string(py::str(arg.first)).compare("returnBleachingInfo") == 0)
         returnBleachingInfo = arg.second.cast<bool>();
 
+      if(std::string(py::str(arg.first)).compare("returnLatency") == 0)
+        returnLatency = arg.second.cast<bool>();
+
       if(std::string(py::str(arg.first)).compare("bleaching") == 0)
         bleachingMode = arg.second.cast<std::string>();
 
@@ -111,7 +114,7 @@ public:
   // the confidence is the one of the policy (for iterative, Bleaching::getConfidence as before)
   void setClassifyOutput(py::list& labels, int i, float numberOfRAMS, BleachingResult& result){
     const std::string& aClass = result.label;
-    const bool asDict = returnConfidence || returnActivationDegree || returnClassesDegrees || returnBleachingInfo;
+    const bool asDict = returnConfidence || returnActivationDegree || returnClassesDegrees || returnBleachingInfo || returnLatency;
     if(asDict){
       labels[i] = py::dict(py::arg("class")=aClass);
     }
@@ -223,8 +226,14 @@ protected:
     const std::map<std::string,int> sizes = classSizes();
     for(unsigned int i=0; i<images.size(); i++){
       if(verbose) std::cout << "\rclassifying " << i+1 << " of " << images.size();
+      // latency: the decision of the example (votes of every RAM and the bleaching), without the
+      // Python output, which is built after the clock stops
+      const auto start = std::chrono::steady_clock::now();
       BleachingResult result = decide(images[i], *policy, sizes);
+      const auto latency = std::chrono::steady_clock::now() - start;
       setClassifyOutput(labels, i, numberOfRAMS, result);
+      if(returnLatency)
+        labels[i]["latencyNs"] = (long long)std::chrono::duration_cast<std::chrono::nanoseconds>(latency).count();
     }
     if(verbose) std::cout << "\r" << std::endl;
     return labels;

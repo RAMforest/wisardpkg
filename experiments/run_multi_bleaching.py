@@ -115,14 +115,15 @@ def scores(predicted, expected, n_classes):
 
 
 def classify(model, data, index):
-    """prediction (class index), confidence of the decision, vote counts, deciding threshold and
-    rounds of every example"""
+    """prediction (class index), confidence of the decision, vote counts, deciding threshold,
+    inference latency (microseconds) and the raw output of every example"""
     out = model.classify(data)
     predicted = np.array([index[o["class"]] for o in out], dtype=np.int64)
     confidence = np.array([rg.confidence([c["degree"] for c in o["classesDegrees"]]) for o in out])
     steps = np.array([o["steps"] for o in out], dtype=np.int64)
     threshold = np.array([o["finalThreshold"] for o in out], dtype=np.int64)
-    return predicted, confidence, steps, threshold, out
+    latency = np.array([o["latencyNs"] for o in out], dtype=np.float64) / 1e3
+    return predicted, confidence, steps, threshold, latency, out
 
 
 def load_checkpoint(path, **options):
@@ -162,7 +163,7 @@ def run_task(task):
             len(p["ytest"]), len(p["labels"]))
         labels = sorted(set(p["labels"]) | set(p["yval"]) | set(p["ytest"]))
         index = {label: i for i, label in enumerate(labels)}
-        model = wp.Wisard(task["address"], returnClassesDegrees=True, returnBleachingInfo=True,
+        model = wp.Wisard(task["address"], returnClassesDegrees=True, returnBleachingInfo=True, returnLatency=True,
                           mapping=rg.mapping(p["size"], task["address"], task["seed"], p["labels"]),
                           tieTolerance=task["tieTolerance"], nextCut=task["nextCut"], **rg.DAB_OPTIONS)
         t0 = time.time()
@@ -184,18 +185,19 @@ def run_task(task):
             for base in BASES:
                 model.setBleaching(bleaching=rg.POLICY.get(base, base), multiBleaching=False)
                 t0 = time.time()
-                b_pred, conf, steps, threshold, _ = classify(model, data, index)
+                b_pred, conf, steps, threshold, latency, _ = classify(model, data, index)
                 row = rules.setdefault(rule_name(base), {})[part] = dict(
                     scores(b_pred, expected, len(labels)), conf=float(conf.mean()), steps=float(steps.mean()),
                     threshold=float(threshold.mean()), thresholdMedian=float(np.median(threshold)), thresholdMax=int(threshold.max()),
-                    seconds=time.time() - t0)
-                log("%-4s %-22s acc %.4f  balAcc %.4f  F1 %.4f  conf %.3f  steps %.2f  threshold %.2f  (%.2fs)", part,
-                    rule_name(base), row["acc"], row["bal_acc"], row["macro_f1"], row["conf"], row["steps"], row["threshold"], row["seconds"])
+                    latencyUs=float(latency.mean()), latencyStdUs=float(latency.std()), seconds=time.time() - t0)
+                log("%-4s %-22s acc %.4f  balAcc %.4f  F1 %.4f  conf %.3f  steps %.2f  threshold %.2f  latency %.2f +- %.2f us  (%.2fs)",
+                    part, rule_name(base), row["acc"], row["bal_acc"], row["macro_f1"], row["conf"], row["steps"], row["threshold"],
+                    row["latencyUs"], row["latencyStdUs"], row["seconds"])
                 traces["%s|%s" % (part, rule_name(base))] = b_pred.astype(np.int16)
                 for c_th in task["thresholds"]:
                     model.setBleaching(multiBleaching=True, confidenceThreshold=c_th)
                     t0 = time.time()
-                    m_pred, conf, steps, threshold, out = classify(model, data, index)
+                    m_pred, conf, steps, threshold, latency, out = classify(model, data, index)
                     rounds = np.array([len(o["thresholds"]) for o in out], dtype=np.int64)
                     first = np.array([o["confidences"][0] for o in out])
                     b_ok, m_ok = b_pred == expected, m_pred == expected
@@ -204,12 +206,12 @@ def run_task(task):
                         threshold=float(threshold.mean()), rounds=float(rounds.mean()), roundsMedian=float(np.median(rounds)), roundsMax=int(rounds.max()),
                         multiFraction=float((rounds > 1).mean()), firstConf=float(first.mean()),
                         changed=int((b_pred != m_pred).sum()), onlyBase=int((b_ok & ~m_ok).sum()), onlyMulti=int((m_ok & ~b_ok).sum()),
-                        seconds=time.time() - t0)
+                        latencyUs=float(latency.mean()), latencyStdUs=float(latency.std()), seconds=time.time() - t0)
                     log("%-4s %-22s acc %.4f  balAcc %.4f  F1 %.4f  conf %.3f  steps %.2f  thresholds traced mean %.2f median %g max %d "
-                        "(more than one %.1f%%)  changed %d (only base %d, only multi %d)  (%.2fs)",
+                        "(more than one %.1f%%)  changed %d (only base %d, only multi %d)  latency %.2f +- %.2f us  (%.2fs)",
                         part, rule_name(base, c_th), row["acc"], row["bal_acc"], row["macro_f1"], row["conf"], row["steps"],
                         row["rounds"], row["roundsMedian"], row["roundsMax"], 100 * row["multiFraction"],
-                        row["changed"], row["onlyBase"], row["onlyMulti"], row["seconds"])
+                        row["changed"], row["onlyBase"], row["onlyMulti"], row["latencyUs"], row["latencyStdUs"], row["seconds"])
                     traces["%s|%s" % (part, rule_name(base, c_th))] = m_pred.astype(np.int16)
                     if c_th == max(task["thresholds"]):
                         # every round of every example: the threshold found and the confidence at it. The

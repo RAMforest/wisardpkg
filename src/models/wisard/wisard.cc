@@ -45,6 +45,9 @@ public:
     value = c["returnBleachingInfo"];
     returnBleachingInfo = value.is_null() ? false : value.get<bool>();
 
+    value = c["returnLatency"];
+    returnLatency = value.is_null() ? false : value.get<bool>();
+
     value = c["bleaching"];
     bleachingMode = value.is_null() ? "iterative" : value.get<std::string>();
 
@@ -749,6 +752,7 @@ protected:
       {"returnActivationDegree", returnActivationDegree},
       {"returnClassesDegrees", returnClassesDegrees},
       {"returnBleachingInfo", returnBleachingInfo},
+      {"returnLatency", returnLatency},
       {"bleaching", bleachingMode},
       {"confidenceTolerance", confidenceTolerance},
       {"freqTolerance", freqTolerance},
@@ -803,6 +807,7 @@ protected:
   bool returnActivationDegree;
   bool returnClassesDegrees;
   bool returnBleachingInfo;
+  bool returnLatency;  // classify: "latencyNs", the wall time of the decision of each example
   int confidence;
   std::string bleachingMode;  // iterative, dab, rdab or bbleaching (bleachingpolicy.cc)
   double confidenceTolerance;
