@@ -12,7 +12,11 @@ and classified, on validation and test, with every rule:
 so the rules differ only in the decision and can be paired sample by sample. Wisard.setBleaching
 changes the rule of the trained model.
 
-Splits, encoders and the "random" mapping are the ones of run_grid.py, so the base rules with the
+Splits and the "random" mapping are the ones of run_grid.py. The binarization is the one of
+encoders.Encoder with binary_as_bit=True: the thermometer only on numeric features with three or
+more values, one-hot only on nominal features with three or more categories, ONE bit for a
+feature with two values (nominal or numeric) and no bit for a constant one. On datasets without
+binary or constant features this is the encoding of run_grid.py, and the base rules with the
 random mapping reproduce its one-shot results. Mappings (--mappings):
   random     a seeded permutation of the bits, the same for every class (run_grid.mapping)
   per-class  one seeded permutation per class
@@ -58,7 +62,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import datasets  # noqa: E402
 import run_grid as rg  # noqa: E402
-from encoders import ENCODINGS  # noqa: E402
+from encoders import ENCODINGS, Encoder, to_dataset  # noqa: E402
 
 import wisardpkg as wp  # noqa: E402
 
@@ -87,6 +91,30 @@ def make_mapping(kind, size, address, seed, labels):
         indexes = complete(np.arange(size))
         return {label: indexes for label in labels}
     return {label: complete(rng.permutation(size)) for label in labels}
+
+
+_prepared = collections.OrderedDict()
+
+
+def prepared(name, encoding, seed, bits):
+    """run_grid.prepared with the binary features as one bit; also the kinds of the features"""
+    key = (name, encoding, seed, bits)
+    if key not in _prepared:
+        ds = rg.raw_dataset(name)
+        (Xtr, ytr), (Xva, yva), (Xte, yte) = rg.split(ds, seed)
+        encoder = Encoder(encoding, bits, binary_as_bit=True).fit(Xtr, ds.nominal)
+        _prepared[key] = dict(
+            size=encoder.size, labels=sorted(set(ytr)),
+            features=dict(thermometer=len(encoder.numeric), binary=len(encoder.binary), onehot=len(encoder.nominal),
+                          onehotBits=sum(len(c) for c in encoder.categories),
+                          dropped=Xtr.shape[1] - len(encoder.numeric) - len(encoder.binary) - len(encoder.nominal)),
+            train=to_dataset(encoder.transform(Xtr), ytr, encoder.size),
+            val=to_dataset(encoder.transform(Xva), yva, encoder.size), yval=list(yva),
+            test=to_dataset(encoder.transform(Xte), yte, encoder.size), ytest=list(yte))
+        while len(_prepared) > 2:
+            _prepared.popitem(last=False)
+    _prepared.move_to_end(key)
+    return _prepared[key]
 
 
 def scores(predicted, expected, n_classes):
@@ -140,9 +168,12 @@ def run_task(task):
     log("network %s %s seed%d %s  thresholds %s  tieTolerance %s  nextCut %s  wisardpkg %s", task["dataset"], task["encoding"],
         task["seed"], task_key(task), task["thresholds"], task["tieTolerance"], task["nextCut"], getattr(wp, "__version__", "?"))
     try:
-        p = rg.prepared(task["dataset"], task["encoding"], task["seed"], task["bits"])
-        log("data ready: %d input bits, train %d, val %d, test %d, %d classes", p["size"], p["train"].size(),
-            len(p["yval"]), len(p["ytest"]), len(p["labels"]))
+        p = prepared(task["dataset"], task["encoding"], task["seed"], task["bits"])
+        f = p["features"]
+        log("data ready: %d input bits (%d numeric features x %d thermometer bits, %d binary features as 1 bit, %d nominal features "
+            "as %d one-hot bits, %d constant features dropped), train %d, val %d, test %d, %d classes", p["size"], f["thermometer"],
+            task["bits"], f["binary"], f["onehot"], f["onehotBits"], f["dropped"], p["train"].size(), len(p["yval"]),
+            len(p["ytest"]), len(p["labels"]))
         labels = sorted(set(p["labels"]) | set(p["yval"]) | set(p["ytest"]))
         index = {label: i for i, label in enumerate(labels)}
         model = wp.Wisard(task["address"], returnClassesDegrees=True, returnBleachingInfo=True,
@@ -198,7 +229,7 @@ def run_task(task):
                         traces[key + "threshold"] = np.concatenate([o["thresholds"] for o in out]).astype(np.int32)
                         traces[key + "confidence"] = np.concatenate([o["confidences"] for o in out]).astype(np.float32)
             traces[part + "|expected"] = expected.astype(np.int16)
-        result.update(size=p["size"], rams=-(-p["size"] // task["address"]), labels=labels,
+        result.update(size=p["size"], features=p["features"], rams=-(-p["size"] // task["address"]), labels=labels,
                       trainCounts=[int(n) for n in np.bincount([index[l] for l in _train_labels(p)], minlength=len(labels))],
                       rules=rules)
         if task["traces"]:
@@ -240,8 +271,9 @@ def build_tasks(args):
         grid = rg.GRID["image" if name in datasets.IMAGES else "tabular"]
         bits_grid = args.bits or grid["bits"]
         ds = datasets.load(name, args.dataDir)  # once per dataset: the input size of every number of bits
-        categories = sum(len(np.unique(ds.X[:, j])) for j in np.where(ds.nominal)[0])
-        sizes = {bits: int((~ds.nominal).sum()) * bits + categories for bits in bits_grid}
+        values = np.array([len(np.unique(ds.X[:, j])) for j in range(ds.X.shape[1])])  # as Encoder(binary_as_bit=True)
+        sizes = {bits: int((~ds.nominal & (values >= 3)).sum()) * bits + int((values == 2).sum())
+                 + int(values[ds.nominal & (values >= 3)].sum()) for bits in bits_grid}
         del ds
         for encoding in args.encodings:
             for seed in args.seeds:

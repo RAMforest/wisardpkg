@@ -70,9 +70,13 @@ layer (`Wisard(multiBleaching=True)`), on the same trained one-shot network.
 - **Datasets**: the ones of the epoch benchmark with results, plus `covertype`, `letter`,
   `wine-white` and `wine-red` (`OPENML_EXTRA` in `datasets.py`; they are not in `NAMES`, so the
   default grids above do not change).
-- **Networks**: distributive encoding, the bits x address grid of `run_grid.py`, three mappings
-  (`random`, the one of `run_grid.py`; `per-class`; `linear`) and seeds 0..4. With the random
-  mapping, the base rules reproduce the one-shot results of `run_grid.py`.
+- **Encoding**: `Encoder(..., binary_as_bit=True)`: distributive thermometer only on numeric
+  features with three or more values in training, one-hot only on nominal features with three or
+  more categories, one bit for a feature with two values (nominal or numeric), nothing for a
+  constant one. The JSON line and the log of every network say how many features fell in each case.
+- **Networks**: the bits x address grid of `run_grid.py`, three mappings (`random`, the one of
+  `run_grid.py`; `per-class`; `linear`) and seeds 0..4. On datasets without binary or constant
+  features, the base rules with the random mapping reproduce the one-shot results of `run_grid.py`.
 - **Outputs of every network**, under `results_multi/`: the JSON line with the scores of every rule;
   `checkpoints/.../<network>.json.gz`, the trained model (`run_multi_bleaching.load_checkpoint`
   gives the `Wisard` back); `logs/.../<network>.log`; and, with `--traces`,
