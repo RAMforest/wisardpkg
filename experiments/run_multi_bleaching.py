@@ -352,9 +352,11 @@ def main():
                 continue
             elapsed = time.time() - start
             test = lambda rule: result["rules"][rule]["test"]["macro_f1"]
-            print("[%d/%d %.0fs, eta %.1fh] %s seed%d %s  F1 test iter %.4f bb %.4f dab %.4f  (%.0fs)" % (
+            latency = lambda rule: "%.1f+-%.1f" % (result["rules"][rule]["test"]["latencyUs"], result["rules"][rule]["test"]["latencyStdUs"])
+            print("[%d/%d %.0fs, eta %.1fh] %s seed%d %s  F1 test iter %.4f bb %.4f dab %.4f  latency us iter %s bb %s dab %s  (%.0fs)" % (
                 n, len(pending), elapsed, elapsed / n * (len(pending) - n) / 3600, result["dataset"], result["seed"],
-                task_key(result), test("iterative"), test("bbleaching"), test("dab"), result["seconds"]), flush=True)
+                task_key(result), test("iterative"), test("bbleaching"), test("dab"),
+                latency("iterative"), latency("bbleaching"), latency("dab"), result["seconds"]), flush=True)
     finally:
         pool.terminate()
     print("finished: %d networks, %d errors, %.1f h" % (len(pending), errors, (time.time() - start) / 3600))
