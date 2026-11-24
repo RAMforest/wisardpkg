@@ -25,8 +25,8 @@ in the name of its files.
 Every network is one JSON line in <resultsDir>/<dataset>/<encoding>/seed<k>.jsonl; networks
 already in the files are skipped, so an interrupted run resumes. Per rule and part: accuracy,
 balanced accuracy, macro F1, recall per class, mean confidence, vote counts (steps), deciding
-threshold; for the multi rules also the mean number of rounds, the fraction of examples with more
-than one round and, against the base, the examples only one of the two gets right.
+threshold; for the multi rules also the number of thresholds traced per example (one per round: mean,
+median and max), the fraction of examples with more than one and, against the base, the examples only one of the two gets right.
 
 Every network also leaves, under <resultsDir>, with the name b<bits>_a<address>_<mapping>:
   checkpoints/<dataset>/<encoding>/seed<k>/<network>.json.gz   the trained model (Wisard.json(),
@@ -201,13 +201,15 @@ def run_task(task):
                     b_ok, m_ok = b_pred == expected, m_pred == expected
                     row = rules.setdefault(rule_name(base, c_th), {})[part] = dict(
                         scores(m_pred, expected, len(labels)), conf=float(conf.mean()), steps=float(steps.mean()),
-                        threshold=float(threshold.mean()), rounds=float(rounds.mean()), roundsMax=int(rounds.max()),
+                        threshold=float(threshold.mean()), rounds=float(rounds.mean()), roundsMedian=float(np.median(rounds)), roundsMax=int(rounds.max()),
                         multiFraction=float((rounds > 1).mean()), firstConf=float(first.mean()),
                         changed=int((b_pred != m_pred).sum()), onlyBase=int((b_ok & ~m_ok).sum()), onlyMulti=int((m_ok & ~b_ok).sum()),
                         seconds=time.time() - t0)
-                    log("%-4s %-22s acc %.4f  balAcc %.4f  F1 %.4f  conf %.3f  steps %.2f  rounds %.2f  changed %d (only base %d, only multi %d)  (%.2fs)",
+                    log("%-4s %-22s acc %.4f  balAcc %.4f  F1 %.4f  conf %.3f  steps %.2f  thresholds traced mean %.2f median %g max %d "
+                        "(more than one %.1f%%)  changed %d (only base %d, only multi %d)  (%.2fs)",
                         part, rule_name(base, c_th), row["acc"], row["bal_acc"], row["macro_f1"], row["conf"], row["steps"],
-                        row["rounds"], row["changed"], row["onlyBase"], row["onlyMulti"], row["seconds"])
+                        row["rounds"], row["roundsMedian"], row["roundsMax"], 100 * row["multiFraction"],
+                        row["changed"], row["onlyBase"], row["onlyMulti"], row["seconds"])
                     traces["%s|%s" % (part, rule_name(base, c_th))] = m_pred.astype(np.int16)
                     if c_th == max(task["thresholds"]):
                         # every round of every example: the threshold found and the confidence at it. The
